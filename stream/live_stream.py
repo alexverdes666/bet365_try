@@ -52,30 +52,44 @@ TARGET_URL = "https://www.bet365.es/#/IP/"
 API_HOST = "0.0.0.0"
 API_PORT = 8365
 
-# Set to None to disable proxy, or {"server": PROXY_LOCAL} to use proxy
+# Set USE_PROXY = True to route through the SOCKS5 proxy
 USE_PROXY = False
 BROWSER_PROXY = {"server": PROXY_LOCAL} if USE_PROXY else None
-RECONNECT_WAIT_WS = 5       # seconds to wait when both WS close before reload
-RECONNECT_WAIT_RELOAD = 5   # seconds to wait after reload failure before browser restart
-RECONNECT_WAIT_CRASH = 10   # seconds backoff after browser crash
+RECONNECT_WAIT_WS = 5
+RECONNECT_WAIT_RELOAD = 5
+RECONNECT_WAIT_CRASH = 10
 
-# Event detail subscriptions:
-# 1. Python captures auth token from Playwright framesent events
-# 2. mw: evaluate patches WebSocket.prototype.send to capture WS refs
-# 3. Polling loop sends subscribe batches using captured WS + token
-TOPICS_PER_BATCH = 15
+# English locale: topic suffix _1_3 (English). Spanish: _3_0.
+# The data server serves based on topic name, not IP.
+# We subscribe to English overview AFTER the page loads (the page uses whatever
+# locale it wants; we override with our own subscriptions).
+LOCALE = "_1_3"       # English
+LOCALE_NATIVE = None  # Auto-detected from first OVInPlay subscription
 
-# JS: Patch send to capture WS refs. Run via page.evaluate('mw:...') AFTER page load.
-WS_REF_CAPTURE = """mw:() => {
-    if (window.__wsRefPatched) return 'already_patched';
+# Detail subscription: how many topics per subscribe message.
+# Larger = faster but risk rejection. 50 topics per message works.
+TOPICS_PER_MSG = 50
+# How many subscribe messages to send per drain cycle (every 0.5s)
+MSGS_PER_CYCLE = 3
+DRAIN_INTERVAL = 0.5  # seconds between drain cycles
+
+# JS: Patch WebSocket.send to capture WS refs + latest auth token.
+WS_HOOK_SCRIPT = """mw:() => {
+    if (window.__wsHooked) return 'already_hooked';
     const origSend = WebSocket.prototype.send;
     window.__wsRefs = [];
+    window.__lastToken = '';
+    window.__tokenTs = 0;
     WebSocket.prototype.send = function(data) {
         if (!window.__wsRefs.includes(this)) window.__wsRefs.push(this);
+        if (typeof data === 'string') {
+            let m = data.match(/[,]A_([A-Za-z0-9+\\/=]{20,})/);
+            if (m) { window.__lastToken = m[1]; window.__tokenTs = Date.now(); }
+        }
         return origSend.call(this, data);
     };
-    window.__wsRefPatched = true;
-    return 'patched';
+    window.__wsHooked = true;
+    return 'hooked';
 }"""
 
 
@@ -359,9 +373,7 @@ class LiveStream:
             camoufox_kwargs["proxy"] = BROWSER_PROXY
             camoufox_kwargs["geoip"] = PROXY_GEO_IP
 
-        async with AsyncCamoufox(
-            **camoufox_kwargs,
-        ) as browser:
+        async with AsyncCamoufox(**camoufox_kwargs) as browser:
             page = await browser.new_page()
             self._page = page
 
@@ -371,98 +383,156 @@ class LiveStream:
             log.info("Navigating to %s", TARGET_URL)
             try:
                 await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-                log.info("Page loaded (domcontentloaded)")
+                log.info("Page loaded")
             except Exception as exc:
-                log.warning("Navigation partial or timed out: %s", exc)
+                log.warning("Navigation: %s", exc)
 
-            # Wait for initial data and WS connections
-            await asyncio.sleep(8)
+            # Wait for initial WS data (reduced from 18s to 5s)
+            await asyncio.sleep(5)
 
-            # Patch WebSocket.send in main world to capture WS refs
+            # Hook WebSocket.send in main world — captures WS refs + auth tokens
             try:
-                r = await page.evaluate(WS_REF_CAPTURE)
-                log.info("WS ref capture: %s", r)
+                r = await page.evaluate(WS_HOOK_SCRIPT)
+                log.info("WS hook: %s", r)
             except Exception as exc:
-                log.warning("WS ref capture failed: %s", exc)
+                log.warning("WS hook failed: %s", exc)
 
-            # Wait for browser keepalive to trigger the patch (~5-10s)
-            await asyncio.sleep(10)
+            # Wait briefly for browser's subscribe/keepalive to trigger the hook
+            await asyncio.sleep(3)
 
             log.info(
-                "Active WS: %d | Events: %d",
+                "Active WS: %d | Events: %d | Token: %s",
                 self.stats["ws_active"],
                 len(self.parser.state.events),
+                "captured" if self._latest_auth_token else "pending (JS hook)",
             )
 
-            # Queue event detail topic subscriptions
+            # Queue ALL event detail subscriptions immediately
             if self.parser.state.events:
-                await self._subscribe_event_details(page)
+                self._queue_event_details()
 
-            # Monitor loop: drain subscription queue + watch WS health
+            log.info("Startup: %d events, %d pending detail subs", len(self.parser.state.events), len(self._pending_detail_topics))
+
+            # Main loop: fast drain + monitor + English override retry
             last_new_event_check = time.time()
+            english_subscribed = False
             while self._should_run:
-                await asyncio.sleep(2)
-
-                # Drain subscription queue (send 1 batch per cycle = 15 topics/2s)
+                # Drain subscription queue (fast: MSGS_PER_CYCLE messages every DRAIN_INTERVAL)
                 if self._pending_detail_topics:
                     await self._drain_subscription_queue(page)
+                    await asyncio.sleep(DRAIN_INTERVAL)
+                else:
+                    await asyncio.sleep(2)
 
-                # Check for new events every 30s
+                # Try English overview subscription until it works
+                if not english_subscribed:
+                    r = await self._subscribe_english_overview(page)
+                    if r:
+                        english_subscribed = True
+
+                # Check for new events every 15s
                 now = time.time()
-                if now - last_new_event_check > 30:
+                if now - last_new_event_check > 15:
                     new_events = set(self.parser.state.events.keys()) - self._subscribed_events
                     if new_events:
-                        log.info("Found %d new events to subscribe", len(new_events))
-                        await self._subscribe_event_details(page, event_ids=new_events)
-                    else:
+                        log.info("New events: %d", len(new_events))
+                        self._queue_event_details(event_ids=new_events)
+                    elif not self._pending_detail_topics:
                         log.info(
-                            "Detail subs: %d sent, %d pending | %s",
+                            "Subs: %d sent | %s",
                             self.stats.get("detail_subs_sent", 0),
-                            len(self._pending_detail_topics),
                             self.parser.summary(),
                         )
                     last_new_event_check = now
 
-                if (
-                    self.stats["ws_connections_seen"] > 0
-                    and self.stats["ws_active"] == 0
-                ):
+                # Reconnect if all WS closed
+                if self.stats["ws_connections_seen"] > 0 and self.stats["ws_active"] == 0:
                     self.stats["reconnection_count"] += 1
-                    log.warning(
-                        "All WebSocket connections closed (reconnect #%d) — "
-                        "reloading page in %ds...",
-                        self.stats["reconnection_count"],
-                        RECONNECT_WAIT_WS,
-                    )
+                    log.warning("All WS closed (reconnect #%d)", self.stats["reconnection_count"])
                     await asyncio.sleep(RECONNECT_WAIT_WS)
                     self._active_ws_urls.clear()
                     self._subscribed_events.clear()
+                    self._pending_detail_topics.clear()
+                    english_subscribed = False
 
                     try:
                         await page.reload(wait_until="domcontentloaded", timeout=60000)
-                        log.info("Page reloaded successfully")
-                        await asyncio.sleep(8)
+                        log.info("Page reloaded")
                         await asyncio.sleep(5)
                         try:
-                            await page.evaluate(WS_REF_CAPTURE)
+                            await page.evaluate(WS_HOOK_SCRIPT)
                         except Exception:
                             pass
-                        await asyncio.sleep(8)
-                        self._subscribed_events.clear()
-                        await self._subscribe_event_details(page)
+                        await asyncio.sleep(3)
+                        await self._subscribe_english_overview(page)
+                        await asyncio.sleep(3)
+                        self._queue_event_details()
                     except Exception as exc:
-                        log.warning(
-                            "Page reload failed: %s — restarting browser in %ds",
-                            exc,
-                            RECONNECT_WAIT_RELOAD,
-                        )
+                        log.warning("Reload failed: %s — restarting browser", exc)
                         await asyncio.sleep(RECONNECT_WAIT_RELOAD)
-                        return  # exit session to trigger full browser restart
+                        return
 
-    async def _subscribe_event_details(
-        self, page: Any, event_ids: set[str] | None = None
-    ) -> None:
-        """Queue event detail topics for subscription."""
+    async def _subscribe_english_overview(self, page: Any) -> bool:
+        """
+        Subscribe to English locale overview topics, overriding whatever
+        locale the page natively uses. The data server serves based on
+        topic name, not IP/domain.
+        """
+        # Detect native locale from existing event topics
+        native_locale = None
+        for ev in list(self.parser.state.events.values())[:5]:
+            if ev.topic:
+                # Topic like OV190632012C1A_3_0 -> locale is _3_0
+                parts = ev.topic.rsplit("_", 2)
+                if len(parts) >= 3:
+                    native_locale = f"_{parts[-2]}_{parts[-1]}"
+                    break
+
+        if native_locale and native_locale == LOCALE:
+            log.info("Already in target locale %s", LOCALE)
+            return True
+
+        if native_locale:
+            log.info("Native locale: %s -> switching to %s (English)", native_locale, LOCALE)
+
+        # Subscribe to English overview topics via JS
+        token = self._latest_auth_token
+        if not token:
+            # Try to get token from JS hook
+            try:
+                token = await page.evaluate("mw:() => window.__lastToken || ''")
+            except Exception:
+                pass
+
+        if not token:
+            return False
+
+        eng_topics = f"OVInPlay{LOCALE},Media_L1_Z3,CONFIG{LOCALE}"
+        try:
+            result = await page.evaluate(f"""mw:() => {{
+                let refs = window.__wsRefs || [];
+                let ws = refs.find(w => w.url && w.url.includes('premws') && w.readyState === 1);
+                if (!ws) return 'no_ws';
+                let msg = String.fromCharCode(0x16) + String.fromCharCode(0x00) +
+                          '{eng_topics},A_{token}' + String.fromCharCode(0x01);
+                ws.send(msg);
+                return 'ok';
+            }}""")
+            if result == "ok":
+                log.info("English overview subscribed")
+                return True
+            else:
+                return False
+        except Exception as exc:
+            log.debug("English overview error: %s", exc)
+            return False
+
+    def _queue_event_details(self, event_ids: set[str] | None = None) -> None:
+        """Queue event detail topics for subscription (non-async, just queues).
+
+        Detail topics use the NATIVE locale (same as the event was loaded with).
+        English names come from the overview subscription, not per-event.
+        """
         if event_ids is None:
             event_ids = set(self.parser.state.events.keys())
 
@@ -478,6 +548,7 @@ class LiveStream:
                 detail_topic = ev.topic
                 if detail_topic.startswith("OV"):
                     detail_topic = detail_topic[2:]
+                # Strip trailing zone suffix (e.g. _3_0 -> _3)
                 if detail_topic.endswith("_0"):
                     detail_topic = detail_topic[:-2]
                 topics.append(detail_topic)
@@ -488,40 +559,56 @@ class LiveStream:
 
         self._pending_detail_topics.extend(topics)
         self._subscribed_events.update(eids)
-        log.info("Queued %d event detail topics (total pending: %d)", len(topics), len(self._pending_detail_topics))
+        log.info("Queued %d detail topics (pending: %d)", len(topics), len(self._pending_detail_topics))
 
     async def _drain_subscription_queue(self, page: Any) -> None:
         """
-        Send one batch of pending detail topics using the Python-captured token
-        and the JS-captured WebSocket reference. Called every 2s from monitor loop.
+        Send multiple batches of pending detail topics per cycle.
+        Uses token from JS hook (preferred) or Python framesent capture.
         """
         if not self._pending_detail_topics:
             return
 
-        token = self._latest_auth_token
-        if not token:
-            return  # wait for token capture from framesent
-
-        batch = self._pending_detail_topics[:TOPICS_PER_BATCH]
-        topic_list = ",".join(batch)
-
+        # Get freshest token: try JS hook first, fall back to Python capture
+        token = ""
         try:
-            result = await page.evaluate(f"""mw:() => {{
-                let refs = window.__wsRefs || [];
-                let ws = refs.find(w => w.url && w.url.includes('premws') && w.readyState === 1);
-                if (!ws) return 'no_ws:' + refs.length;
-                let msg = String.fromCharCode(0x16) + String.fromCharCode(0x00) +
-                          '{topic_list},A_{token}' + String.fromCharCode(0x01);
-                ws.send(msg);
-                return 'sent:' + {len(batch)};
-            }}""")
-            if result and result.startswith("sent:"):
-                self._pending_detail_topics = self._pending_detail_topics[TOPICS_PER_BATCH:]
-                self.stats["detail_subs_sent"] = self.stats.get("detail_subs_sent", 0) + len(batch)
-            elif "no_ws" not in str(result):
-                log.warning("Subscribe drain: %s", result)
-        except Exception as exc:
-            log.debug("Subscribe drain error: %s", exc)
+            token = await page.evaluate("mw:() => window.__lastToken || ''")
+        except Exception:
+            pass
+        if not token:
+            token = self._latest_auth_token
+        if not token:
+            return
+
+        sent_count = 0
+        for _ in range(MSGS_PER_CYCLE):
+            if not self._pending_detail_topics:
+                break
+
+            batch = self._pending_detail_topics[:TOPICS_PER_MSG]
+            topic_list = ",".join(batch)
+
+            try:
+                result = await page.evaluate(f"""mw:() => {{
+                    let refs = window.__wsRefs || [];
+                    let ws = refs.find(w => w.url && w.url.includes('premws') && w.readyState === 1);
+                    if (!ws) return 'no_ws';
+                    let msg = String.fromCharCode(0x16) + String.fromCharCode(0x00) +
+                              '{topic_list},A_{token}' + String.fromCharCode(0x01);
+                    ws.send(msg);
+                    return 'ok';
+                }}""")
+                if result == "ok":
+                    self._pending_detail_topics = self._pending_detail_topics[TOPICS_PER_MSG:]
+                    sent_count += len(batch)
+                    self.stats["detail_subs_sent"] = self.stats.get("detail_subs_sent", 0) + len(batch)
+                else:
+                    break  # WS not available
+            except Exception:
+                break
+
+        if sent_count:
+            log.info("Sent %d detail subs (%d pending)", sent_count, len(self._pending_detail_topics))
 
     # -- WebSocket hooks ----------------------------------------------------
 

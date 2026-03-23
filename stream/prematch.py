@@ -421,7 +421,7 @@ DOM_EXTRACT_JS = r"""() => {
             // Odds are siblings of the fixture inside this wrapper
             const oddsEls = row.querySelectorAll('[class*="ParticipantOdds"]');
             const odds = [];
-            for (const o of oddsEls) { const v = txt(o); if (/^\d+\.\d+$/.test(v)) odds.push(v); }
+            for (const o of oddsEls) { const v = txt(o); if (/^\d+\.\d+$/.test(v) && odds[odds.length-1] !== v) odds.push(v); }
             if (teams.length >= 2) {
                 const name = teams[0] + ' v ' + teams[1];
                 if (!seen.has(name + startTime)) {
@@ -445,7 +445,7 @@ DOM_EXTRACT_JS = r"""() => {
                 const nameEls = row.querySelectorAll('[class*="Team"], [class*="Name"]');
                 for (const ne of nameEls) { const n = txt(ne); if (n && n.length > 1) teams.push(n); }
                 const oddsEls = row.querySelectorAll('[class*="Odds"]');
-                for (const oe of oddsEls) { const v = txt(oe); if (/^\d+\.\d+$/.test(v)) odds.push(v); }
+                for (const oe of oddsEls) { const v = txt(oe); if (/^\d+\.\d+$/.test(v) && odds[odds.length-1] !== v) odds.push(v); }
                 if (teams.length >= 2) {
                     const name = teams[0] + ' v ' + teams[1];
                     if (!seen.has(name)) { seen.add(name); results.events.push({name, teams: teams.slice(0,2), competition: comp, start_time: '', odds}); }

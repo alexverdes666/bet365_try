@@ -105,6 +105,9 @@ WS_HOOK = """mw:() => {
 # ---------------------------------------------------------------------------
 _BASE_RE = re.compile(r"^(\d+)")
 
+# Virtual sport IDs to exclude from coverage metrics
+VIRTUAL_SPORT_IDS = {str(x) for x in list(range(2019, 2035)) + [145, 146, 998, 996, 999, 144]}
+
 
 def base_id(full_id: str) -> str:
     """'191750846C1A_3_0' → '191750846' (universal across regions)."""
@@ -112,33 +115,45 @@ def base_id(full_id: str) -> str:
     return m.group(1) if m else full_id
 
 
+def _is_virtual(parser: ZapParser, eids: list[str]) -> bool:
+    """Check if event group belongs to a virtual sport."""
+    for eid in eids:
+        ev = parser.state.events.get(eid)
+        if ev and ev.sport_id in VIRTUAL_SPORT_IDS:
+            return True
+    return False
+
+
 def dedup_coverage(parser: ZapParser) -> tuple[int, int, int, int]:
-    """(covered, full_detail, unique_total, unique_active) — deduped by base_id.
-    covered     = unique events with ≥1 market (any data at all)
-    full_detail = unique events with >1 market (multi-market depth)
-    unique_total = all unique events
-    unique_active = unique events that are in-play (have score/minute)
+    """(covered, full_detail, unique_active, unique_total) — deduped, REAL sports only.
+    covered     = active events with ≥1 market
+    full_detail = active events with >1 market (multi-market depth)
+    unique_active = unique active real sport events
+    unique_total = all unique real sport events
     """
     groups: dict[str, list[str]] = {}
     for eid in parser.state.events:
         groups.setdefault(base_id(eid), []).append(eid)
 
-    total = len(groups)
-    active = covered = full_detail = 0
+    total = active = covered = full_detail = 0
     for bid, eids in groups.items():
+        if _is_virtual(parser, eids):
+            continue
+        total += 1
         is_active = any(
             (parser.state.events[e].score or parser.state.events[e].minute)
             for e in eids if e in parser.state.events
         )
-        if is_active:
-            active += 1
+        if not is_active:
+            continue
+        active += 1
         market_counts = [len(parser.state.event_markets.get(e, set())) for e in eids]
         best = max(market_counts) if market_counts else 0
         if best >= 1:
             covered += 1
         if best > 1:
             full_detail += 1
-    return covered, full_detail, total, active
+    return covered, full_detail, active, total
 
 
 def dedup_event_list(parser: ZapParser) -> list[dict]:
@@ -512,7 +527,7 @@ class MultiRegionStream:
     async def _reporter(self):
         while True:
             await asyncio.sleep(30)
-            cov, det, tot, act = dedup_coverage(self.parser)
+            cov, det, act, tot = dedup_coverage(self.parser)
             raw = self.parser.summary()
             servers = {w.premws_server for w in self.workers if w.premws_server}
             per_w = " | ".join(
@@ -520,11 +535,10 @@ class MultiRegionStream:
                 for w in self.workers
             )
             log.info(
-                "=== COVERED: %d/%d total (%d%%) | active: %d | full detail: %d | "
+                "=== REAL SPORTS: %d/%d active covered (%d%%) | detail: %d | "
                 "%d servers | raw %d | %s ===",
-                cov, tot, 100 * cov // max(tot, 1),
-                act, det,
-                len(servers), raw["events"], per_w,
+                cov, act, 100 * cov // max(act, 1),
+                det, len(servers), raw["events"], per_w,
             )
 
 

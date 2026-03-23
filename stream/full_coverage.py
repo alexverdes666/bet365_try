@@ -78,8 +78,9 @@ REGIONS = [
     },
 ]
 
-# Sport pages for pre-match REST crawling
+# Sport pages for pre-match REST crawling (real + virtual)
 SPORTS = [
+    # Real sports
     ("1", "Football"), ("13", "Tennis"), ("18", "Basketball"),
     ("17", "Ice Hockey"), ("78", "Handball"), ("91", "Volleyball"),
     ("12", "American Football"), ("16", "Baseball"), ("3", "Cricket"),
@@ -87,6 +88,15 @@ SPORTS = [
     ("9", "Boxing/UFC"), ("8", "Rugby Union"), ("19", "Rugby League"),
     ("6", "Golf"), ("36", "Australian Rules"), ("83", "Futsal"),
     ("90", "Floorball"), ("151", "eSports"),
+    # Virtual sports
+    ("998", "Virtual Sports"),
+    ("146", "Virtual Football"), ("2030", "Virtual Horse Racing"),
+    ("2031", "Virtual Greyhounds"), ("2024", "Virtual Am. Football"),
+    ("2026", "Virtual Basketball"), ("2022", "Virtual Cricket"),
+    ("2034", "Virtual Ice Hockey"), ("2023", "Virtual Darts"),
+    ("2032", "Virtual Cycling"), ("2021", "Virtual Speedway"),
+    ("2029", "Virtual Tennis"), ("2019", "Virtual Motor Racing"),
+    ("145", "Virtual Trotting"), ("2020", "Virtual Boxing"),
 ]
 
 API_HOST = "0.0.0.0"
@@ -98,15 +108,16 @@ RECONNECT_WAIT_CRASH = 10
 LAUNCH_STAGGER = 15
 
 # REST crawler timing
-REST_PAGE_WAIT = 10         # seconds to wait after navigation for REST responses
-REST_BETWEEN_PAGES = 35     # seconds between page navigations (30-40 range)
-REST_FULL_CYCLE_PAUSE = 60  # seconds to pause after a full crawl cycle
+REST_PAGE_WAIT = 8          # seconds to wait after navigation for REST responses
+REST_BETWEEN_PAGES = 20     # seconds between page navigations
+REST_FULL_CYCLE_PAUSE = 30  # seconds to pause after a full crawl cycle
 
 # REST API URL patterns to intercept
 REST_INTERCEPT_PATTERNS = [
     "splashcontentapi",
     "couponapi",
     "matchbettingcontentapi",
+    "SportsBook.API",
     "defaultapi/sports-configuration",
 ]
 
@@ -431,7 +442,9 @@ class RegionWorker:
             if token:
                 overview_topics = [
                     f"OVInPlay{self.locale}", f"CONFIG{self.locale}",
-                    "OVM150", "OVM92", "OVM151",
+                    # Sport module overviews (TT, eSports, virtual sports)
+                    "OVM150", "OVM92", "OVM151", "OVM998",
+                    "OVM146", "OVM145",
                 ]
                 await self._send(page, 0x16, overview_topics, token)
                 self._log.info("Overview + sport modules subscribed")

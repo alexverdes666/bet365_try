@@ -65,10 +65,12 @@ REGIONS = [
         "locale": "_1_3",
     },
     {
-        "label": "DK",
+        "label": "INT",
         "urls": [
+            "https://www.bet365.com/#/IP/",
             "https://www.bet365.dk/#/IP/",
-            "https://www.bet365.com/#/IP/",  # fallback if DK blocked
+            "https://www.bet365.it/#/IP/",
+            "https://www.bet365.gr/#/IP/",
         ],
         "locale": "_1_3",
     },

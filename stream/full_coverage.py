@@ -492,9 +492,7 @@ class RegionWorker:
             return None
         t = ev.topic
         if t.startswith("OV"):
-            t = t[2:]
-        if t.endswith("_0"):
-            t = t[:-2]
+            t = "6V" + t[2:]  # Replace OV with 6V, keep _0 suffix
         return t
 
     async def _get_token(self, page) -> str:

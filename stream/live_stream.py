@@ -286,8 +286,8 @@ class BrowserWorker:
         ev = self.parser.state.events.get(eid)
         if not ev or not ev.topic: return None
         t = ev.topic
-        if t.startswith("OV"): t = t[2:]
-        if t.endswith("_0"): t = t[:-2]
+        if t.startswith("OV"):
+            t = "6V" + t[2:]  # Replace OV with 6V, keep _0 suffix
         return t
 
     async def _get_token(self, page) -> str:

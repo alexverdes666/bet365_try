@@ -67,28 +67,29 @@ MAX_RETRIES_PER_PAGE = 2    # retries if a page fails to load
 
 # Known sport IDs and their hash routes on bet365
 # These are discovered dynamically, but we seed with commonly known ones
+# Use /#/AS/B{id}/ (splash format) which renders CouponPodModules with events+odds
 SEED_SPORTS = {
-    "1":  {"name": "Football",     "route": "/#/AC/B1/C1/D8/"},
-    "13": {"name": "Tennis",       "route": "/#/AC/B13/"},
-    "18": {"name": "Basketball",   "route": "/#/AC/B18/"},
-    "17": {"name": "Ice Hockey",   "route": "/#/AC/B17/"},
-    "78": {"name": "Handball",     "route": "/#/AC/B78/"},
-    "91": {"name": "Volleyball",   "route": "/#/AC/B91/"},
-    "12": {"name": "American Football", "route": "/#/AC/B12/"},
-    "83": {"name": "Futsal",       "route": "/#/AC/B83/"},
-    "3":  {"name": "Cricket",      "route": "/#/AC/B3/"},
-    "14": {"name": "Snooker",      "route": "/#/AC/B14/"},
-    "92": {"name": "Table Tennis",  "route": "/#/AC/B92/"},
-    "36": {"name": "Australian Rules", "route": "/#/AC/B36/"},
-    "66": {"name": "Bowls",        "route": "/#/AC/B66/"},
-    "75": {"name": "Gaelic Sports", "route": "/#/AC/B75/"},
-    "90": {"name": "Floorball",    "route": "/#/AC/B90/"},
-    "15": {"name": "Darts",        "route": "/#/AC/B15/"},
-    "9":  {"name": "Boxing/UFC",   "route": "/#/AC/B9/"},
-    "8":  {"name": "Rugby Union",  "route": "/#/AC/B8/"},
-    "19": {"name": "Rugby League", "route": "/#/AC/B19/"},
-    "16": {"name": "Baseball",     "route": "/#/AC/B16/"},
-    "6":  {"name": "Golf",         "route": "/#/AC/B6/"},
+    "1":  {"name": "Football",     "route": "/#/AS/B1/"},
+    "13": {"name": "Tennis",       "route": "/#/AS/B13/"},
+    "18": {"name": "Basketball",   "route": "/#/AS/B18/"},
+    "17": {"name": "Ice Hockey",   "route": "/#/AS/B17/"},
+    "78": {"name": "Handball",     "route": "/#/AS/B78/"},
+    "91": {"name": "Volleyball",   "route": "/#/AS/B91/"},
+    "12": {"name": "American Football", "route": "/#/AS/B12/"},
+    "83": {"name": "Futsal",       "route": "/#/AS/B83/"},
+    "3":  {"name": "Cricket",      "route": "/#/AS/B3/"},
+    "14": {"name": "Snooker",      "route": "/#/AS/B14/"},
+    "92": {"name": "Table Tennis",  "route": "/#/AS/B92/"},
+    "36": {"name": "Australian Rules", "route": "/#/AS/B36/"},
+    "66": {"name": "Bowls",        "route": "/#/AS/B66/"},
+    "75": {"name": "Gaelic Sports", "route": "/#/AS/B75/"},
+    "90": {"name": "Floorball",    "route": "/#/AS/B90/"},
+    "15": {"name": "Darts",        "route": "/#/AS/B15/"},
+    "9":  {"name": "Boxing/UFC",   "route": "/#/AS/B9/"},
+    "8":  {"name": "Rugby Union",  "route": "/#/AS/B8/"},
+    "19": {"name": "Rugby League", "route": "/#/AS/B19/"},
+    "16": {"name": "Baseball",     "route": "/#/AS/B16/"},
+    "6":  {"name": "Golf",         "route": "/#/AS/B6/"},
 }
 
 
@@ -395,168 +396,85 @@ class ResponseParser:
 # JavaScript executed via page.evaluate() to extract events from the DOM.
 # bet365 pre-match DOM: cpm-CouponPodModule containers with
 # cpm-ParticipantFixtureDetails for teams and cpm-ParticipantOdds for odds.
-DOM_EXTRACT_JS = """() => {
+# Odds are SIBLINGS of the fixture (inside MarketGroup_Wrapper), not children.
+DOM_EXTRACT_JS = r"""() => {
     const results = {events: [], competitions: [], meta: {}};
-
-    // Helper: get text content safely
     function txt(el) { return el ? el.textContent.trim() : ''; }
+    const seen = new Set();
 
-    // Strategy 1: Look for the standard pre-match event layout
-    // Events typically appear in grouped containers with competition headers
-    // and event rows below them
-
-    // Try to find competition/league groupings
-    const compHeaders = document.querySelectorAll(
-        '.gl-MarketGroupContainer, .rcl-ParticipantFixtureDetails_TeamNames, ' +
-        '.src-FixtureSubGroup, .sph-EventWrapper, ' +
-        '[class*="MarketGroup"], [class*="Coupon"], [class*="fixture"]'
-    );
-
-    // Strategy 2: Find all participant/event containers
-    const eventContainers = document.querySelectorAll(
-        '.sl-CouponParticipantWithBookCloses, .rcl-ParticipantFixtureDetails, ' +
-        '.src-ParticipantFixtureDetails, .gll-Participant, ' +
-        '[class*="Participant"], [class*="EventRow"], [class*="fixture-row"]'
-    );
-
-    // Strategy 3: Look for odds buttons/elements
-    const oddsElements = document.querySelectorAll(
-        '.sac-ParticipantOddsOnly50, .gl-Participant_General, ' +
-        '.gll-Participant_General, .sac-ParticipantCen498, ' +
-        '[class*="ParticipantOdds"], [class*="Odds"]'
-    );
-
-    results.meta.compHeaders = compHeaders.length;
-    results.meta.eventContainers = eventContainers.length;
-    results.meta.oddsElements = oddsElements.length;
-
-    // Strategy 4: Generic approach - find event groups and extract data
-    // Look for common bet365 DOM patterns
-    const groups = document.querySelectorAll(
-        '.gl-MarketGroup, .src-FixtureSubGroup, ' +
-        '[class*="MarketGroup"], [class*="CouponGroup"]'
-    );
-
-    for (const group of groups) {
-        // Try to get competition name from group header
-        const headerEl = group.querySelector(
-            '.cm-MarketGroupWithIconButton_Text, .rcl-MarketGroupButton_Text, ' +
-            '[class*="MarketGroupButton"], [class*="GroupHeader"], ' +
-            '.sph-CompetitionGroupButton_Title'
-        );
-        const competitionName = txt(headerEl);
-        if (competitionName) {
-            results.competitions.push(competitionName);
-        }
-
-        // Find event rows within this group
-        const rows = group.querySelectorAll(
-            '.sl-CouponParticipantWithBookCloses, ' +
-            '.gll-Participant_General, ' +
-            '.rcl-ParticipantFixtureDetailsWith498, ' +
-            '[class*="ParticipantFixtureDetails"], ' +
-            '[class*="CouponParticipant"]'
-        );
-
+    // Strategy 1: CouponPodModule (All Sports / splash pages)
+    const pods = document.querySelectorAll('[class*="CouponPodModule"]');
+    results.meta.pods = pods.length;
+    for (const pod of pods) {
+        const hdr = pod.querySelector('[class*="Header"]');
+        const comp = hdr ? txt(hdr) : '';
+        if (comp) results.competitions.push(comp);
+        // Use MarketGroup_Wrapper (innermost row containing fixture + odds)
+        const rows = pod.querySelectorAll('[class*="MarketGroup_Wrapper"]');
         for (const row of rows) {
-            // Extract team names
-            const teamEls = row.querySelectorAll(
-                '.rcl-ParticipantFixtureDetails_TeamNames .rcl-ParticipantFixtureDetails_TeamWrapper, ' +
-                '.gll-Participant_Name, ' +
-                '[class*="TeamNames"] [class*="Team"], ' +
-                '[class*="ParticipantName"]'
-            );
-            const teams = Array.from(teamEls).map(t => txt(t)).filter(Boolean);
-
-            // Extract time/date
-            const timeEl = row.querySelector(
-                '.rcl-ParticipantFixtureDetails_BookCloses, ' +
-                '[class*="BookClose"], [class*="DateTime"], [class*="StartTime"]'
-            );
-            const startTime = txt(timeEl);
-
-            // Extract odds
-            const oddsEls = row.querySelectorAll(
-                '.sac-ParticipantOddsOnly50_Odds, .gl-Participant_Odds, ' +
-                '.gll-Participant_Odds, .sac-ParticipantCen498_Odds, ' +
-                '[class*="ParticipantOdds"], [class*="Odds"]:not([class*="OddsChange"])'
-            );
-            const odds = Array.from(oddsEls).map(o => txt(o)).filter(Boolean);
-
-            if (teams.length >= 2 || (teams.length === 1 && odds.length > 0)) {
-                const eventName = teams.join(' v ');
-                results.events.push({
-                    name: eventName,
-                    teams: teams,
-                    competition: competitionName,
-                    start_time: startTime,
-                    odds: odds,
-                });
+            const d = row.querySelector('[class*="ParticipantFixtureDetails"]');
+            if (!d) continue;
+            const lines = d.innerText.split(String.fromCharCode(10)).map(function(s){return s.trim()}).filter(function(s){return s.length>1});
+            const teams = lines.filter(function(t){return !/^\d{1,2}:\d{2}$/.test(t) && !/^\d+$/.test(t) && !/^(Lun|Mar|Mi|Jue|Vie|S|Dom|Hoy)/i.test(t)});
+            const tm = d.innerText.match(/(\d{1,2}:\d{2})/);
+            const startTime = tm ? tm[1] : '';
+            // Odds are siblings of the fixture inside this wrapper
+            const oddsEls = row.querySelectorAll('[class*="ParticipantOdds"]');
+            const odds = [];
+            for (const o of oddsEls) { const v = txt(o); if (/^\d+\.\d+$/.test(v)) odds.push(v); }
+            if (teams.length >= 2) {
+                const name = teams[0] + ' v ' + teams[1];
+                if (!seen.has(name + startTime)) {
+                    seen.add(name + startTime);
+                    results.events.push({name, teams: teams.slice(0,2), competition: comp, start_time: startTime, odds});
+                }
             }
         }
     }
 
-    // Strategy 5: If no groups found, try flat extraction
+    // Strategy 2: gl-MarketGroup on sport-specific coupon pages
     if (results.events.length === 0) {
-        // Look for any visible text that looks like events
-        const allParticipants = document.querySelectorAll(
-            '[class*="Participant"]'
-        );
-
-        let currentPair = [];
-        let currentOdds = [];
-        let lastComp = '';
-
-        for (const el of allParticipants) {
-            const nameEl = el.querySelector('[class*="Name"], [class*="Team"]');
-            const oddsEl = el.querySelector('[class*="Odds"]');
-
-            if (nameEl) {
-                const name = txt(nameEl);
-                if (name) currentPair.push(name);
-            }
-            if (oddsEl) {
-                const odd = txt(oddsEl);
-                if (odd && /^\\d+\\.\\d+$/.test(odd)) currentOdds.push(odd);
-            }
-
-            // When we have a pair, emit an event
-            if (currentPair.length >= 2) {
-                results.events.push({
-                    name: currentPair.join(' v '),
-                    teams: [...currentPair],
-                    competition: lastComp,
-                    start_time: '',
-                    odds: [...currentOdds],
-                });
-                currentPair = [];
-                currentOdds = [];
+        const groups = document.querySelectorAll('[class*="gl-MarketGroup "]');
+        results.meta.marketGroups = groups.length;
+        for (const group of groups) {
+            const hdr = group.querySelector('[class*="MarketGroupButton"]');
+            const comp = hdr ? txt(hdr) : '';
+            const rows = group.querySelectorAll('[class*="MarketGroup_Wrapper"]');
+            for (const row of rows) {
+                const teams = []; const odds = [];
+                const nameEls = row.querySelectorAll('[class*="Team"], [class*="Name"]');
+                for (const ne of nameEls) { const n = txt(ne); if (n && n.length > 1) teams.push(n); }
+                const oddsEls = row.querySelectorAll('[class*="Odds"]');
+                for (const oe of oddsEls) { const v = txt(oe); if (/^\d+\.\d+$/.test(v)) odds.push(v); }
+                if (teams.length >= 2) {
+                    const name = teams[0] + ' v ' + teams[1];
+                    if (!seen.has(name)) { seen.add(name); results.events.push({name, teams: teams.slice(0,2), competition: comp, start_time: '', odds}); }
+                }
             }
         }
     }
 
-    // Strategy 6: Just get all visible text that contains " v " or " vs "
+    // Strategy 3: Fallback text scan for " v " patterns
     if (results.events.length === 0) {
         const body = document.body.innerText || '';
-        const lines = body.split('\\n');
-        for (const line of lines) {
-            const trimmed = line.trim();
-            if ((trimmed.includes(' v ') || trimmed.includes(' vs ')) && trimmed.length < 100) {
-                results.events.push({
-                    name: trimmed,
-                    teams: trimmed.split(/ v | vs /),
-                    competition: '',
-                    start_time: '',
-                    odds: [],
-                });
+        const lines = body.split('\n').map(function(l){return l.trim()}).filter(Boolean);
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes(' v ') && lines[i].length < 100 && lines[i].length > 5) {
+                const odds = [];
+                for (let j = i+1; j < Math.min(i+5, lines.length); j++) {
+                    if (/^\d+\.\d{2}$/.test(lines[j])) odds.push(lines[j]);
+                }
+                const name = lines[i];
+                if (!seen.has(name)) {
+                    seen.add(name);
+                    results.events.push({name, teams: name.split(' v '), competition: '', start_time: '', odds});
+                }
             }
         }
     }
 
-    // Collect page URL info
     results.meta.url = window.location.href;
     results.meta.hash = window.location.hash;
-    results.meta.title = document.title;
 
     return results;
 }"""
@@ -1131,12 +1049,11 @@ class PrematchCrawler:
             meta = result.get("meta", {})
 
             log.info(
-                "DOM extraction for %s: %d events found (meta: headers=%s, containers=%s, odds=%s)",
+                "DOM extraction for %s: %d events found (pods=%s, groups=%s)",
                 sport_name,
                 len(dom_events),
-                meta.get("compHeaders", 0),
-                meta.get("eventContainers", 0),
-                meta.get("oddsElements", 0),
+                meta.get("pods", 0),
+                meta.get("marketGroups", 0),
             )
 
             self.stats["dom_extractions"] += 1

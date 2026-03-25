@@ -141,6 +141,7 @@ class Market:
 class Participant:
     """PA entity -- a selection / outcome within a market."""
     id: str = ""
+    name: str = ""
     odds: str = ""
     order: str = ""
     fixture_id: str = ""
@@ -397,7 +398,7 @@ _MA_FIELD_MAP = {
     "CN": "columns", "SU": "suspended", "IT": "topic",
 }
 _PA_FIELD_MAP = {
-    "ID": "id", "OD": "odds", "OR": "order", "FI": "fixture_id",
+    "ID": "id", "NA": "name", "OD": "odds", "OR": "order", "FI": "fixture_id",
     "HA": "handicap", "HD": "handicap_display", "SU": "suspended", "IT": "topic",
 }
 
@@ -565,9 +566,23 @@ class ZapParser:
         objects, one per sub-frame.
         """
         if isinstance(data, (bytes, bytearray, memoryview)):
-            text = bytes(data).decode("utf-8", errors="replace")
+            raw = bytes(data)
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # ZAP protocol may contain Latin-1 encoded fields
+                text = raw.decode("latin-1")
         else:
             text = data
+
+        # Fix double-encoding: Playwright may decode binary WS frames as Latin-1
+        # but the content is actually UTF-8. Detect and fix Ã-style mojibake.
+        if any(c in text for c in "ÃÂ"):
+            try:
+                fixed = text.encode("latin-1").decode("utf-8")
+                text = fixed
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                pass  # Not double-encoded, keep original
 
         # Strip trailing NUL terminator(s).
         text = text.rstrip(NUL)
@@ -791,7 +806,8 @@ class ZapParser:
           ``IT`` (topic) field as the unique key for competitions.
         - EV: ``ID`` (or ``IT``) is unique.  Events are linked to their parent
           competition by position (all EVs after a CT belong to that CT).
-        - MA/PA: ``ID`` is unique.  Linked to parent by position.
+        - MA/PA: ``ID`` is **non-unique** across events (e.g. "1", "2").
+          We use IT (topic) as the unique key, or composite parent:ID.
         """
         current_cl: str = ""
         current_ct: str = ""
@@ -842,19 +858,31 @@ class ZapParser:
                     self._emit(ChangeEvent(ctype, etype, eid, topic, old, obj))
 
             elif etype == "MA":
-                eid = kv.get("ID", "")
+                raw_id = kv.get("ID", "")
                 parent = current_ev or self._infer_parent(topic, "EV")
+                # Market IDs are non-unique across events (e.g. "1", "2", "3").
+                # Use IT (topic) as unique key if available, else composite parent:ID.
+                ma_key = kv.get("IT", "")
+                if not ma_key:
+                    ma_key = f"{parent}:{raw_id}" if parent else raw_id
                 obj = _build_entity(etype, kv, parent_id=parent)
                 if obj:
+                    obj.id = ma_key
                     old = self.state.upsert_market(obj)
-                    current_ma = eid
+                    current_ma = ma_key
                     ctype = ChangeType.MARKET_ADDED if old is None else ChangeType.MARKET_UPDATED
-                    self._emit(ChangeEvent(ctype, etype, eid, topic, old, obj))
+                    self._emit(ChangeEvent(ctype, etype, ma_key, topic, old, obj))
 
             elif etype == "PA":
-                eid = kv.get("ID", "")
+                raw_id = kv.get("ID", "")
                 parent = current_ma or self._infer_parent(topic, "MA")
+                # Selection IDs may also collide; use IT or composite key.
+                pa_key = kv.get("IT", "")
+                if not pa_key:
+                    pa_key = f"{parent}:{raw_id}" if parent else raw_id
                 obj = _build_entity(etype, kv, parent_id=parent)
+                if obj:
+                    obj.id = pa_key
                 if obj:
                     old = self.state.upsert_selection(obj)
                     ctype = ChangeType.SELECTION_ADDED if old is None else ChangeType.SELECTION_UPDATED
@@ -895,38 +923,58 @@ class ZapParser:
         # delta frame stored during _parse_delta.
         pass  # handled by _parse_delta rewrite below
 
+    def _resolve_entity_id(self, etype: str, raw_id: str, kv: Dict[str, str]) -> str:
+        """Resolve a raw entity ID to the composite key used in the state tree."""
+        if etype in ("MA", "PA"):
+            # Try IT (topic) first — it's always unique.
+            it = kv.get("IT", "")
+            if it and it in (self.state.markets if etype == "MA" else self.state.selections):
+                return it
+            # Try the raw ID directly (might already be a composite key).
+            store = self.state.markets if etype == "MA" else self.state.selections
+            if raw_id in store:
+                return raw_id
+            # Search for composite keys ending with :raw_id
+            for key in store:
+                if key.endswith(f":{raw_id}"):
+                    return key
+        return raw_id
+
     def _apply_entity_update(
         self, etype: str, eid: str, kv: Dict[str, str], topic: str
     ) -> None:
+        # Resolve composite key for MA/PA types
+        resolved_id = self._resolve_entity_id(etype, eid, kv)
+
         if etype == "CL":
-            existing = self.state.sports.get(eid)
+            existing = self.state.sports.get(resolved_id)
             if existing:
                 changed = _apply_kv_to_entity(existing, etype, kv)
-                self._emit(ChangeEvent(ChangeType.EVENT_UPDATED, etype, eid, topic, changed, existing))
+                self._emit(ChangeEvent(ChangeType.EVENT_UPDATED, etype, resolved_id, topic, changed, existing))
         elif etype == "CT":
-            existing = self.state.competitions.get(eid)
+            existing = self.state.competitions.get(resolved_id)
             if existing:
                 changed = _apply_kv_to_entity(existing, etype, kv)
-                self._emit(ChangeEvent(ChangeType.COMPETITION_UPDATED, etype, eid, topic, changed, existing))
+                self._emit(ChangeEvent(ChangeType.COMPETITION_UPDATED, etype, resolved_id, topic, changed, existing))
         elif etype == "EV":
-            existing = self.state.events.get(eid)
+            existing = self.state.events.get(resolved_id)
             if existing:
                 old_score = existing.score
                 changed = _apply_kv_to_entity(existing, etype, kv)
                 ct = ChangeType.SCORE_CHANGE if "score" in changed else ChangeType.EVENT_UPDATED
-                self._emit(ChangeEvent(ct, etype, eid, topic, {"old_score": old_score, **changed}, existing))
+                self._emit(ChangeEvent(ct, etype, resolved_id, topic, {"old_score": old_score, **changed}, existing))
         elif etype == "MA":
-            existing = self.state.markets.get(eid)
+            existing = self.state.markets.get(resolved_id)
             if existing:
                 changed = _apply_kv_to_entity(existing, etype, kv)
-                self._emit(ChangeEvent(ChangeType.MARKET_UPDATED, etype, eid, topic, changed, existing))
+                self._emit(ChangeEvent(ChangeType.MARKET_UPDATED, etype, resolved_id, topic, changed, existing))
         elif etype == "PA":
-            existing = self.state.selections.get(eid)
+            existing = self.state.selections.get(resolved_id)
             if existing:
                 old_odds = existing.odds
                 changed = _apply_kv_to_entity(existing, etype, kv)
                 ct = ChangeType.ODDS_CHANGE if "odds" in changed else ChangeType.SELECTION_UPDATED
-                self._emit(ChangeEvent(ct, etype, eid, topic, {"old_odds": old_odds, **changed}, existing))
+                self._emit(ChangeEvent(ct, etype, resolved_id, topic, {"old_odds": old_odds, **changed}, existing))
 
     def _apply_insert(
         self, topic: str, entities: List[Tuple[str, Dict[str, str]]]
@@ -944,9 +992,11 @@ class ZapParser:
         """
         if entities:
             for etype, kv in entities:
-                eid = kv.get("ID", "")
-                if not eid:
+                raw_id = kv.get("ID", "")
+                if not raw_id:
                     continue
+                # Resolve composite key for MA/PA
+                eid = self._resolve_entity_id(etype, raw_id, kv)
                 removed: Any = None
                 ctype: Optional[ChangeType] = None
                 if etype == "CL":
@@ -1022,6 +1072,7 @@ class ZapParser:
                     if sel:
                         mkt_dict["selections"].append({
                             "id": sel.id,
+                            "name": sel.name,
                             "odds": sel.odds,
                             "order": sel.order,
                             "handicap": sel.handicap,
@@ -1086,6 +1137,7 @@ class ZapParser:
                 if sel:
                     mkt_dict["selections"].append({
                         "id": sel.id,
+                        "name": sel.name,
                         "odds": sel.odds,
                         "order": sel.order,
                         "handicap": sel.handicap,

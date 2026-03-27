@@ -88,6 +88,11 @@ SPORTS = [
     ("9", "Boxing/UFC"), ("8", "Rugby Union"), ("19", "Rugby League"),
     ("6", "Golf"), ("36", "Australian Rules"), ("83", "Futsal"),
     ("90", "Floorball"), ("151", "eSports"),
+    ("2", "Horse Racing"), ("4", "Greyhounds"),
+    ("84", "Field Hockey"), ("95", "Beach Volleyball"),
+    ("10", "Cycling"), ("11", "Motor Racing"), ("94", "Badminton"),
+    ("107", "Squash"), ("5", "Formula 1"),
+    ("75", "Gaelic Sports"), ("97", "Bowls"), ("110", "Water Polo"),
     # Virtual sports
     ("998", "Virtual Sports"),
     ("146", "Virtual Football"), ("2030", "Virtual Horse Racing"),
@@ -143,6 +148,16 @@ WS_HOOK = """mw:() => {
 # Deduplication
 # ---------------------------------------------------------------------------
 _BASE_RE = re.compile(r"^(\d+)")
+_TOPIC_EVENT_NUM_RE = re.compile(r"^(?:OV|6V|M)(\d+)")
+_TOPIC_SPORT_RE = re.compile(r"C(\d+)[A_]")
+# Virtual sport IDs — excluded from real-sport coverage metrics
+_VIRTUAL_SPORT_IDS = frozenset({
+    "144", "145", "146", "998",
+    "2019", "2020", "2021", "2022", "2023", "2024",
+    "2026", "2029", "2030", "2031", "2032", "2033", "2034",
+})
+# Topics that are config/metadata, not real events
+_SKIP_TOPIC_PREFIXES = ("PVG_CONFIG", "EV_#AS#", "EV-#", "OVDI-")
 
 
 def base_id(full_id: str) -> str:
@@ -151,16 +166,54 @@ def base_id(full_id: str) -> str:
     return m.group(1) if m else full_id
 
 
-def dedup_coverage(parser: ZapParser) -> dict[str, int]:
-    """Compute deduplicated coverage statistics.
+def _dedup_key(eid: str, parser: ZapParser) -> str:
+    """Extract a stable match number from the event's topic for dedup.
 
-    Returns dict with keys:
-        covered, full_detail, unique_total, unique_active,
-        ws_events, rest_events
+    Events for the same match arrive with different ID formats across
+    sources (OVInPlay gives long composite IDs, M-prefix gives shorter
+    ones), but the *topic* always embeds the same match number.
+
+    OV191980357C92A_3_0  ->  191980357
+    M191980357C92_L3_Z0  ->  191980357
+    6V191980357C92A_3_0  ->  191980357
+
+    Falls back to base_id(eid) when the topic doesn't match.
     """
+    ev = parser.state.events.get(eid)
+    if ev and ev.topic:
+        m = _TOPIC_EVENT_NUM_RE.match(ev.topic)
+        if m:
+            return m.group(1)
+    return base_id(eid)
+
+
+def _is_real_event(eid: str, parser: ZapParser) -> bool:
+    """Return True if this is a real sporting event (not virtual/config)."""
+    ev = parser.state.events.get(eid)
+    if not ev:
+        return False
+    if ev.topic and any(ev.topic.startswith(p) for p in _SKIP_TOPIC_PREFIXES):
+        return False
+    if ev.sport_id in _VIRTUAL_SPORT_IDS:
+        return False
+    if not ev.name:
+        return False
+    return True
+
+
+def _group_events(parser: ZapParser, real_only: bool = False) -> dict[str, list[str]]:
+    """Group events by dedup key, optionally filtering to real sports."""
     groups: dict[str, list[str]] = {}
     for eid in parser.state.events:
-        groups.setdefault(base_id(eid), []).append(eid)
+        if real_only and not _is_real_event(eid, parser):
+            continue
+        groups.setdefault(_dedup_key(eid, parser), []).append(eid)
+    return groups
+
+
+def dedup_coverage(parser: ZapParser) -> dict[str, int]:
+    """Compute deduplicated coverage statistics (real sports only)."""
+    groups = _group_events(parser, real_only=True)
 
     total = len(groups)
     active = covered = full_detail = 0
@@ -178,19 +231,30 @@ def dedup_coverage(parser: ZapParser) -> dict[str, int]:
         if best > 1:
             full_detail += 1
 
+    all_groups = _group_events(parser, real_only=False)
+    virtual_total = len(all_groups) - total
+
     return {
         "covered": covered,
         "full_detail": full_detail,
         "unique_total": total,
         "unique_active": active,
+        "virtual_total": virtual_total,
     }
 
 
 def dedup_event_list(parser: ZapParser) -> list[dict]:
-    """Deduplicated event list -- best variant (most markets) per base_id."""
+    """Deduplicated event list -- best variant (most markets) per dedup key."""
     groups: dict[str, list[str]] = {}
     for eid in parser.state.events:
-        groups.setdefault(base_id(eid), []).append(eid)
+        ev = parser.state.events.get(eid)
+        if not ev:
+            continue
+        if ev.topic and any(ev.topic.startswith(p) for p in _SKIP_TOPIC_PREFIXES):
+            continue
+        if not ev.name:
+            continue
+        groups.setdefault(_dedup_key(eid, parser), []).append(eid)
 
     out = []
     for bid, eids in groups.items():
@@ -199,6 +263,27 @@ def dedup_event_list(parser: ZapParser) -> list[dict]:
         if ev_data:
             ev_data["base_id"] = bid
             ev_data["region_variants"] = len(eids)
+            # Infer sport_id from sibling variants or topic
+            if not ev_data.get("sport_id"):
+                for eid in eids:
+                    ev = parser.state.events.get(eid)
+                    if ev and ev.sport_id:
+                        ev_data["sport_id"] = ev.sport_id
+                        sport = parser.state.sports.get(ev.sport_id)
+                        if sport:
+                            ev_data["sport_name"] = sport.name
+                        break
+                else:
+                    for eid in eids:
+                        ev = parser.state.events.get(eid)
+                        if ev and ev.topic:
+                            m = _TOPIC_SPORT_RE.search(ev.topic)
+                            if m:
+                                ev_data["sport_id"] = m.group(1)
+                                sport = parser.state.sports.get(m.group(1))
+                                if sport:
+                                    ev_data["sport_name"] = sport.name
+                                break
             out.append(ev_data)
     return out
 
@@ -273,12 +358,13 @@ class LiveAPI:
             "service": "bet365 Full Coverage (Live WS + Pre-Match REST)",
             "ws_regions": [w.label for w in self.ws_workers],
             "rest_crawler": "active" if self.rest_worker and self.rest_worker._run else "inactive",
-            "unique_events": cov["unique_total"],
-            "unique_active": cov["unique_active"],
-            "covered": cov["covered"],
-            "full_detail": cov["full_detail"],
-            "coverage_pct": 100 * cov["covered"] // max(cov["unique_total"], 1),
-            "full_detail_pct": 100 * cov["full_detail"] // max(cov["unique_total"], 1),
+            "real_events": cov["unique_total"],
+            "real_active": cov["unique_active"],
+            "real_covered": cov["covered"],
+            "real_full_detail": cov["full_detail"],
+            "real_coverage_pct": 100 * cov["covered"] // max(cov["unique_total"], 1),
+            "real_full_detail_pct": 100 * cov["full_detail"] // max(cov["unique_total"], 1),
+            "virtual_events": cov.get("virtual_total", 0),
             "rest_responses_fed": rest_stats.get("responses_fed", 0),
             "rest_bytes_fed": rest_stats.get("bytes_fed", 0),
             "rest_sports_crawled": rest_stats.get("sports_crawled", 0),
@@ -298,9 +384,10 @@ class LiveAPI:
         eid = r.match_info["event_id"]
         d = self.parser.get_event(eid)
         if not d:
-            # Try as base_id
+            # Try as dedup_key / base_id
             groups: dict[str, list[str]] = {}
             for e in self.parser.state.events:
+                groups.setdefault(_dedup_key(e, self.parser), []).append(e)
                 groups.setdefault(base_id(e), []).append(e)
             eids = groups.get(eid, [])
             if eids:
@@ -320,28 +407,31 @@ class LiveAPI:
         cov = dedup_coverage(self.parser)
         rest_stats = self.rest_worker.get_stats() if self.rest_worker else {}
 
-        # Per-sport breakdown
+        # Per-sport breakdown (deduped, real sports only)
         sport_breakdown = {}
-        for ev in self.parser.state.events.values():
-            sid = ev.sport_id
+        for ev_data in dedup_event_list(self.parser):
+            sid = ev_data.get("sport_id", "")
+            if sid in _VIRTUAL_SPORT_IDS:
+                continue
+            sname = ev_data.get("sport_name", "") or ev_data.get("competition_name", "") or sid
             if sid not in sport_breakdown:
-                sport = self.parser.state.sports.get(sid)
                 sport_breakdown[sid] = {
-                    "name": sport.name if sport else sid,
+                    "name": sname,
                     "events": 0,
                     "with_markets": 0,
                 }
             sport_breakdown[sid]["events"] += 1
-            if self.parser.state.event_markets.get(ev.id):
+            if ev_data.get("markets"):
                 sport_breakdown[sid]["with_markets"] += 1
 
         return web.json_response({
             "uptime": round(time.time() - self.stats["t0"], 1),
-            "unique_total": cov["unique_total"],
-            "unique_active": cov["unique_active"],
-            "covered": cov["covered"],
-            "full_detail": cov["full_detail"],
-            "coverage_pct": 100 * cov["covered"] // max(cov["unique_total"], 1),
+            "real_events": cov["unique_total"],
+            "real_active": cov["unique_active"],
+            "real_covered": cov["covered"],
+            "real_full_detail": cov["full_detail"],
+            "real_coverage_pct": 100 * cov["covered"] // max(cov["unique_total"], 1),
+            "virtual_events": cov.get("virtual_total", 0),
             "raw_parser": self.parser.summary(),
             "ws_workers": [{
                 "label": w.label, "premws": w.premws_server or "?",
@@ -442,12 +532,19 @@ class RegionWorker:
             if token:
                 overview_topics = [
                     f"OVInPlay{self.locale}", f"CONFIG{self.locale}",
-                    # Sport module overviews (TT, eSports, virtual sports)
-                    "OVM150", "OVM92", "OVM151", "OVM998",
-                    "OVM146", "OVM145",
+                    # Sport module overviews — cover all real sports
+                    "OVM1", "OVM13", "OVM18", "OVM17", "OVM92",
+                    "OVM151", "OVM2", "OVM4", "OVM15", "OVM16",
+                    "OVM3", "OVM14", "OVM9", "OVM8", "OVM19",
+                    "OVM78", "OVM91", "OVM95", "OVM84", "OVM36",
+                    "OVM83", "OVM90", "OVM12", "OVM6", "OVM7",
+                    "OVM94", "OVM10", "OVM11", "OVM75", "OVM110",
+                    # Virtual sports
+                    "OVM998", "OVM146", "OVM145", "OVM150",
                 ]
                 await self._send(page, 0x16, overview_topics, token)
-                self._log.info("Overview + sport modules subscribed")
+                self._log.info("Overview + %d sport modules subscribed",
+                               len(overview_topics))
             await asyncio.sleep(5)
 
             self._log.info("premws: %s | WS: %d", self.premws_server or "?", self._ws_active)
@@ -467,6 +564,15 @@ class RegionWorker:
 
             new = []
             for eid in all_events:
+                ev = self.parser.state.events.get(eid)
+                if not ev:
+                    continue
+                # Skip virtual sports — their 6V detail topics don't work
+                if ev.sport_id in _VIRTUAL_SPORT_IDS:
+                    continue
+                # Skip config/metadata topics
+                if ev.topic and any(ev.topic.startswith(p) for p in _SKIP_TOPIC_PREFIXES):
+                    continue
                 t = self._detail_topic(eid)
                 if t and t not in self._subs:
                     new.append(t)
@@ -486,13 +592,20 @@ class RegionWorker:
             self._log.info("Subs: %d | premws: %s", len(self._subs), self.premws_server or "?")
             await asyncio.sleep(15)
 
+    _M_TOPIC_RE = re.compile(r"^M(\d+C\d+)_L(\d+)_Z(\d+)$")
+
     def _detail_topic(self, eid: str) -> str | None:
         ev = self.parser.state.events.get(eid)
         if not ev or not ev.topic:
             return None
         t = ev.topic
         if t.startswith("OV"):
-            t = "6V" + t[2:]  # Replace OV with 6V, keep _0 suffix
+            t = "6V" + t[2:]  # OV191980357C92A_3_0 -> 6V191980357C92A_3_0
+        else:
+            # M191980357C92_L3_Z0 -> 6V191980357C92A_3_0
+            m = self._M_TOPIC_RE.match(t)
+            if m:
+                t = f"6V{m.group(1)}A_{m.group(2)}_{m.group(3)}"
         return t
 
     async def _get_token(self, page) -> str:
@@ -865,25 +978,28 @@ class FullCoverageStream:
                 for w in self.ws_workers
             )
 
-            # Per-sport breakdown
-            sport_counts: dict[str, int] = {}
-            for ev in self.parser.state.events.values():
-                sid = ev.sport_id
-                sport = self.parser.state.sports.get(sid)
-                name = sport.name if sport else sid
-                sport_counts[name] = sport_counts.get(name, 0) + 1
+            # Per-sport breakdown (real sports only, deduped)
+            sport_counts: dict[str, tuple[int, int]] = {}
+            for ev_data in dedup_event_list(self.parser):
+                sid = ev_data.get("sport_id", "")
+                if sid in _VIRTUAL_SPORT_IDS:
+                    continue
+                sname = ev_data.get("sport_name", "") or sid
+                prev = sport_counts.get(sname, (0, 0))
+                has_mkt = 1 if ev_data.get("markets") else 0
+                sport_counts[sname] = (prev[0] + 1, prev[1] + has_mkt)
 
-            # Sort by count descending, take top 8
-            top_sports = sorted(sport_counts.items(), key=lambda x: -x[1])[:8]
-            sport_str = ", ".join(f"{n}:{c}" for n, c in top_sports)
+            top_sports = sorted(sport_counts.items(), key=lambda x: -x[1][0])[:10]
+            sport_str = ", ".join(f"{n}:{wm}/{t}" for n, (t, wm) in top_sports)
 
             log.info(
-                "=== COVERAGE: %d/%d events (%d%%) | active: %d | full detail: %d | "
-                "%d WS servers | raw: %d events, %d markets, %d sels | WS frames: %d | "
-                "REST fed: %d (%dKB) | %s ===",
+                "=== REAL COVERAGE: %d/%d events (%d%%) | active: %d | full detail: %d | "
+                "virtual: %d | %d WS servers | raw: %d ev, %d mkt, %d sel | "
+                "WS frames: %d | REST fed: %d (%dKB) | %s ===",
                 cov["covered"], cov["unique_total"],
                 100 * cov["covered"] // max(cov["unique_total"], 1),
                 cov["unique_active"], cov["full_detail"],
+                cov.get("virtual_total", 0),
                 len(servers), raw["events"], raw["markets"], raw["selections"],
                 self.stats.get("ws_frames", 0),
                 rest_stats.get("responses_fed", 0),
@@ -891,7 +1007,7 @@ class FullCoverageStream:
                 per_ws,
             )
             if sport_str:
-                log.info("  Sports: %s", sport_str)
+                log.info("  Sports (covered/total): %s", sport_str)
             if rest_stats:
                 log.info(
                     "  REST: cycle #%d | current: %s | errors: %d",

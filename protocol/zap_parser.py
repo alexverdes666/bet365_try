@@ -1030,6 +1030,17 @@ class ZapParser:
 
     # -- query methods -------------------------------------------------------
 
+    @staticmethod
+    def _decimal_odds(frac: str) -> str:
+        """Convert fractional odds '5/6' to decimal '1.83'. Pass-through if already decimal."""
+        if not frac or "/" not in frac:
+            return frac
+        try:
+            num, den = frac.split("/", 1)
+            return str(round(float(num) / float(den) + 1, 2))
+        except (ValueError, ZeroDivisionError):
+            return frac
+
     def get_all_live_events(self) -> List[Dict[str, Any]]:
         """
         Return all live events with scores, time info, and top-level odds.
@@ -1073,7 +1084,7 @@ class ZapParser:
                         mkt_dict["selections"].append({
                             "id": sel.id,
                             "name": sel.name,
-                            "odds": sel.odds,
+                            "odds": self._decimal_odds(sel.odds),
                             "order": sel.order,
                             "handicap": sel.handicap,
                             "suspended": sel.suspended,
@@ -1138,7 +1149,7 @@ class ZapParser:
                     mkt_dict["selections"].append({
                         "id": sel.id,
                         "name": sel.name,
-                        "odds": sel.odds,
+                        "odds": self._decimal_odds(sel.odds),
                         "order": sel.order,
                         "handicap": sel.handicap,
                         "handicap_display": sel.handicap_display,

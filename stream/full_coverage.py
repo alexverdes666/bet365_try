@@ -56,24 +56,22 @@ PROXIES = [
     {"server": "http://res.proxy-seller.com:10002", "username": "4f6d12485ca053d6", "password": "OzkAVbyM"},
 ]
 
-# WS regions — each targets a different backend cluster for maximum diversity.
+# WS regions — 3 instances on bet365.com (English), each with a different proxy IP.
+# We need 3 because each IP is limited to ~200 concurrent detail subscriptions.
 REGIONS = [
     {
-        "label": "ES",
-        "urls": ["https://www.bet365.es/#/IP/"],
+        "label": "R1",
+        "urls": ["https://www.bet365.com/#/IP/"],
         "locale": "_1_3",
     },
     {
-        "label": "AU",
-        "urls": ["https://www.bet365.com.au/#/IP/"],
+        "label": "R2",
+        "urls": ["https://www.bet365.com/#/IP/"],
         "locale": "_1_3",
     },
     {
-        "label": "DK",
-        "urls": [
-            "https://www.bet365.dk/#/IP/",
-            "https://www.bet365.com/#/IP/",  # fallback if DK blocked
-        ],
+        "label": "R3",
+        "urls": ["https://www.bet365.com/#/IP/"],
         "locale": "_1_3",
     },
 ]
@@ -747,7 +745,7 @@ class RestCrawlerWorker:
             page.on("response", lambda r: asyncio.ensure_future(self._on_response(r)))
 
             # Initial navigation to bet365 home to establish session
-            initial_url = "https://www.bet365.es/#/AS/B1/"
+            initial_url = "https://www.bet365.com/#/AS/B1/"
             self._log.info("Initial nav: %s", initial_url)
             try:
                 await page.goto(initial_url, wait_until="domcontentloaded", timeout=60000)
@@ -768,7 +766,7 @@ class RestCrawlerWorker:
                     break
 
                 self._current_sport = f"{sport_name} ({sport_id})"
-                url = f"https://www.bet365.es/#/AS/B{sport_id}/"
+                url = f"https://www.bet365.com/#/AS/B{sport_id}/"
                 self._log.info("Navigating to %s: %s", sport_name, url)
 
                 try:

@@ -94,7 +94,7 @@ class LiveAPI:
         self._r = None
 
     async def start(self):
-        app = web.Application()
+        app = web.Application(middlewares=[self._cors_middleware])
         for path, h in [("/events", self.h_ev), ("/events/{sid}", self.h_sp),
                          ("/event/{eid}", self.h_det), ("/sports", self.h_sports),
                          ("/stats", self.h_stats), ("/ws", self.h_ws), ("/", self.h_idx)]:
@@ -103,6 +103,14 @@ class LiveAPI:
         await self._r.setup()
         await web.TCPSite(self._r, API_HOST, API_PORT).start()
         log.info("API http://%s:%d", API_HOST, API_PORT)
+
+    @web.middleware
+    async def _cors_middleware(self, request, handler):
+        resp = await handler(request)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "*"
+        return resp
 
     async def stop(self):
         for w in list(self._ws): await w.close()

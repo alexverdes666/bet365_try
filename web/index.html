@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bet365 Live Markets</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0e1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--hover:#1c2128}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Header */
+.header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:18px;font-weight:700}
+.header h1 span{color:var(--green)}
+.stats{display:flex;gap:16px;font-size:12px;color:var(--muted)}
+.stats .val{color:var(--text);font-weight:600}
+.live-dot{display:inline-block;width:8px;height:8px;background:var(--green);border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Layout */
+.container{display:flex;height:calc(100vh - 49px)}
+.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;flex-shrink:0}
+.main{flex:1;overflow-y:auto;padding:16px}
+
+/* Sidebar */
+.sport-item{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s}
+.sport-item:hover,.sport-item.active{background:var(--hover)}
+.sport-item.active{border-left:3px solid var(--accent)}
+.sport-item .name{font-size:13px;display:flex;align-items:center;gap:6px}
+.sport-item .count{font-size:11px;background:var(--bg);padding:1px 6px;border-radius:10px;color:var(--muted)}
+.sport-item.active .count{background:var(--accent);color:#fff}
+
+/* Events table */
+.events-table{width:100%;border-collapse:collapse}
+.events-table th{text-align:left;padding:6px 10px;font-size:11px;text-transform:uppercase;color:var(--muted);background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+.events-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.events-table tr:hover{background:var(--hover)}
+.events-table tr.comp-header{background:var(--surface)}
+.events-table tr.comp-header td{font-size:12px;font-weight:600;color:var(--accent);padding:4px 10px}
+.event-name{cursor:pointer;font-weight:500}
+.event-name:hover{color:var(--accent)}
+.score{font-weight:700;font-size:15px;min-width:50px;text-align:center}
+.minute{font-size:11px;padding:2px 6px;border-radius:4px;font-weight:600;text-align:center;min-width:36px}
+.minute.live{background:var(--green);color:#fff}
+.minute.ft{background:var(--muted);color:#fff}
+
+/* Odds cells */
+.odds{font-family:'SF Mono',Consolas,monospace;font-size:13px;font-weight:600;padding:3px 8px;border-radius:4px;text-align:center;min-width:52px;display:inline-block;background:var(--bg);border:1px solid var(--border)}
+.odds:hover{border-color:var(--accent);color:var(--accent)}
+.odds.suspended{opacity:.3;text-decoration:line-through}
+
+/* Event detail panel */
+.detail-panel{position:fixed;right:0;top:49px;width:500px;height:calc(100vh - 49px);background:var(--surface);border-left:1px solid var(--border);overflow-y:auto;transform:translateX(100%);transition:transform .25s ease;z-index:50}
+.detail-panel.open{transform:translateX(0)}
+.detail-close{position:absolute;top:10px;right:14px;background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer}
+.detail-close:hover{color:var(--text)}
+.detail-header{padding:16px;border-bottom:1px solid var(--border)}
+.detail-header h2{font-size:16px;font-weight:700;margin-bottom:4px}
+.detail-header .meta{font-size:12px;color:var(--muted)}
+.detail-header .detail-score{font-size:28px;font-weight:800;text-align:center;padding:10px 0}
+
+/* Markets in detail */
+.market{border-bottom:1px solid var(--border)}
+.market-header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:600;background:var(--bg)}
+.market-header:hover{background:var(--hover)}
+.market-header .arrow{transition:transform .2s;color:var(--muted)}
+.market-header .arrow.open{transform:rotate(90deg)}
+.market-header .sel-count{font-size:11px;color:var(--muted);font-weight:400}
+.market-body{padding:8px 16px 12px}
+.sel-grid{display:grid;gap:4px}
+.sel-grid.cols-2{grid-template-columns:1fr 1fr}
+.sel-grid.cols-3{grid-template-columns:1fr 1fr 1fr}
+.sel-grid.cols-many{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+.sel-item{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px}
+.sel-item:hover{border-color:var(--accent)}
+.sel-item .sel-name{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px}
+.sel-item .sel-odds{font-family:'SF Mono',Consolas,monospace;font-weight:700;color:var(--text);white-space:nowrap}
+.sel-item.suspended{opacity:.35}
+
+/* Search */
+.search{padding:8px 16px;border-bottom:1px solid var(--border)}
+.search input{width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;outline:none}
+.search input:focus{border-color:var(--accent)}
+
+/* Responsive */
+@media(max-width:768px){.sidebar{display:none}.detail-panel{width:100%}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span class="live-dot"></span> bet365 <span>Live Markets</span></h1>
+  <div class="stats" id="stats">Loading...</div>
+</div>
+
+<div class="container">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main" id="main">
+    <table class="events-table">
+      <thead>
+        <tr>
+          <th style="width:50px">Time</th>
+          <th>Event</th>
+          <th style="width:55px;text-align:center">Score</th>
+          <th style="width:60px;text-align:center">1</th>
+          <th style="width:60px;text-align:center">X</th>
+          <th style="width:60px;text-align:center">2</th>
+          <th style="width:50px;text-align:center">Mkts</th>
+        </tr>
+      </thead>
+      <tbody id="events-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="detail-panel" id="detail">
+  <button class="detail-close" onclick="closeDetail()">&times;</button>
+  <div id="detail-content"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8365';
+let allEvents = [];
+let currentSport = null;
+let selectedEventId = null;
+let openMarkets = new Set();
+
+const SPORT_ICONS = {
+  '1':'\u26BD','13':'\uD83C\uDFBE','18':'\uD83C\uDFC0','16':'\u26BE','17':'\uD83C\uDFD2',
+  '3':'\uD83C\uDFCF','91':'\uD83C\uDFD0','95':'\uD83C\uDFD0','78':'\uD83E\uDD3E',
+  '151':'\uD83C\uDFAE','7':'\u26F3','15':'\uD83C\uDFAF','92':'\uD83C\uDFD3',
+  '83':'\u26BD','2':'\uD83C\uDFC7','4':'\uD83D\uDC15','144':'\uD83C\uDFAE',
+  '117':'\uD83E\uDD4E'
+};
+
+function icon(sportId){ return SPORT_ICONS[sportId] || '\uD83C\uDFC6'; }
+
+function fmtOdds(o){
+  if(!o) return '-';
+  const v = parseFloat(o);
+  return isNaN(v) ? o : v.toFixed(2);
+}
+
+// Fetch events
+async function fetchEvents(){
+  try{
+    const r = await fetch(API + '/events');
+    allEvents = await r.json();
+    renderSidebar();
+    renderEvents();
+    if(selectedEventId) renderDetail(selectedEventId);
+  }catch(e){ console.error('fetch error',e); }
+}
+
+async function fetchStats(){
+  try{
+    const r = await fetch(API + '/stats');
+    const d = await r.json();
+    const ps = d.parser || {};
+    document.getElementById('stats').innerHTML = `
+      <span><span class="val">${ps.events||0}</span> events</span>
+      <span><span class="val">${ps.markets||0}</span> markets</span>
+      <span><span class="val">${ps.selections||0}</span> selections</span>
+      <span><span class="val">${d.coverage||0}%</span> coverage</span>
+      <span><span class="val">${d.frames||0}</span> frames</span>
+    `;
+  }catch(e){}
+}
+
+// Sidebar
+function renderSidebar(){
+  const sports = {};
+  allEvents.forEach(e => {
+    if(!e.markets || !e.markets.length) return;
+    const sid = e.sport_id || '?';
+    if(!sports[sid]) sports[sid] = {id:sid, name:e.sport_name||sid, count:0};
+    sports[sid].count++;
+  });
+  const sorted = Object.values(sports).sort((a,b) => b.count - a.count);
+  const totalWithMkts = sorted.reduce((s,sp) => s+sp.count, 0);
+
+  let html = `<div class="sport-item ${!currentSport?'active':''}" onclick="selectSport(null)">
+    <span class="name">\uD83C\uDF0D All Sports</span>
+    <span class="count">${totalWithMkts}</span>
+  </div>`;
+  sorted.forEach(sp => {
+    html += `<div class="sport-item ${currentSport===sp.id?'active':''}" onclick="selectSport('${sp.id}')">
+      <span class="name">${icon(sp.id)} ${sp.name}</span>
+      <span class="count">${sp.count}</span>
+    </div>`;
+  });
+  document.getElementById('sidebar').innerHTML = html;
+}
+
+function selectSport(id){
+  currentSport = id;
+  renderSidebar();
+  renderEvents();
+}
+
+// Events table
+function renderEvents(){
+  const filtered = allEvents.filter(e => {
+    if(!e.markets || !e.markets.length) return false;
+    if(currentSport && e.sport_id !== currentSport) return false;
+    return true;
+  });
+
+  // Group by competition
+  const groups = {};
+  filtered.forEach(e => {
+    const key = e.competition_id || 'other';
+    if(!groups[key]) groups[key] = {name: e.competition_name || e.competition_id || '', sport: e.sport_id, events:[]};
+    groups[key].events.push(e);
+  });
+
+  let html = '';
+  Object.values(groups).forEach(g => {
+    html += `<tr class="comp-header"><td colspan="7">${icon(g.sport)} ${g.name}</td></tr>`;
+    g.events.forEach(e => {
+      const main = findMainMarket(e);
+      const sels = main ? main.selections || [] : [];
+      const s1 = sels[0], s2 = sels[1], s3 = sels[2];
+      const min = e.minute;
+      const minClass = min && e.time_type==='1' ? 'live' : (e.update_context||'').toLowerCase().includes('full') ? 'ft' : '';
+
+      html += `<tr>
+        <td><span class="minute ${minClass}">${min ? min+"'" : '--'}</span></td>
+        <td><span class="event-name" onclick="openDetail('${e.id}')">${e.name || 'Unknown'}</span></td>
+        <td class="score">${e.score || '-'}</td>
+        <td style="text-align:center">${s1 ? `<span class="odds ${s1.suspended==='1'?'suspended':''}">${fmtOdds(s1.odds)}</span>` : ''}</td>
+        <td style="text-align:center">${s2 ? `<span class="odds ${s2.suspended==='1'?'suspended':''}">${fmtOdds(s2.odds)}</span>` : ''}</td>
+        <td style="text-align:center">${s3 ? `<span class="odds ${s3.suspended==='1'?'suspended':''}">${fmtOdds(s3.odds)}</span>` : ''}</td>
+        <td style="text-align:center;color:var(--muted);font-size:12px">${e.markets ? e.markets.length : 0}</td>
+      </tr>`;
+    });
+  });
+
+  if(!html) html = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted)">No events with markets</td></tr>';
+  document.getElementById('events-body').innerHTML = html;
+}
+
+function findMainMarket(e){
+  if(!e.markets) return null;
+  return e.markets.find(m => {
+    const n = (m.name||'').toLowerCase();
+    return n.includes('resultado final') || n.includes('fulltime') || n.includes('ganador') || m.columns==='3';
+  }) || e.markets.find(m => m.selections?.length === 3)
+     || e.markets.find(m => m.selections?.length === 2)
+     || e.markets[0];
+}
+
+// Detail panel
+function openDetail(eventId){
+  selectedEventId = eventId;
+  openMarkets.clear();
+  renderDetail(eventId);
+  document.getElementById('detail').classList.add('open');
+}
+
+function closeDetail(){
+  selectedEventId = null;
+  document.getElementById('detail').classList.remove('open');
+}
+
+async function renderDetail(eventId){
+  try{
+    const r = await fetch(API + '/event/' + encodeURIComponent(eventId));
+    const e = await r.json();
+    if(e.error){ document.getElementById('detail-content').innerHTML = '<p style="padding:20px;color:var(--muted)">Event not found</p>'; return; }
+
+    const markets = e.markets || [];
+    let html = `
+      <div class="detail-header">
+        <div class="meta">${icon(e.sport_id)} ${e.sport_name || ''} &mdash; ${e.competition_name || ''}</div>
+        <h2>${e.name}</h2>
+        <div class="detail-score">${e.score || 'vs'}</div>
+        <div class="meta" style="text-align:center">${e.minute ? e.minute+"' min" : ''} ${e.update_context || ''}</div>
+        <div class="meta" style="margin-top:8px">${markets.length} markets &middot; ${markets.reduce((s,m)=>s+(m.selections?.length||0),0)} selections</div>
+      </div>
+      <div class="search"><input type="text" id="market-search" placeholder="Search markets..." oninput="filterMarkets()"></div>
+      <div id="markets-list">`;
+
+    markets.forEach((m,i) => {
+      const sels = m.selections || [];
+      const isOpen = openMarkets.has(m.id);
+      const suspended = m.suspended === '1';
+      const name = m.name || m.market_type || 'Market';
+      const hasOdds = sels.some(s => s.odds);
+
+      html += `<div class="market" data-name="${(name+' '+sels.map(s=>s.name||'').join(' ')).toLowerCase()}">
+        <div class="market-header" onclick="toggleMkt('${m.id}')">
+          <span><span class="arrow ${isOpen?'open':''}">&#9654;</span> ${name} <span class="sel-count">(${sels.length})</span></span>
+          ${suspended ? '<span style="color:var(--red);font-size:11px">SUSPENDED</span>' :
+            (!isOpen && hasOdds ? '<span style="font-size:11px;color:var(--muted)">' + sels.filter(s=>s.odds).slice(0,4).map(s=>fmtOdds(s.odds)).join(' / ') + '</span>' : '')}
+        </div>`;
+
+      if(isOpen && !suspended){
+        const cols = sels.length <= 2 ? 'cols-2' : sels.length === 3 ? 'cols-3' : 'cols-many';
+        html += `<div class="market-body"><div class="sel-grid ${cols}">`;
+        sels.forEach(s => {
+          const susp = s.suspended === '1';
+          const hcap = s.handicap ? ` (${s.handicap_display || s.handicap})` : '';
+          html += `<div class="sel-item ${susp?'suspended':''}">
+            <span class="sel-name" title="${(s.name||'')+hcap}">${s.name || '#'}${hcap}</span>
+            <span class="sel-odds">${s.odds ? fmtOdds(s.odds) : '-'}</span>
+          </div>`;
+        });
+        html += `</div></div>`;
+      }
+      html += `</div>`;
+    });
+
+    html += '</div>';
+    document.getElementById('detail-content').innerHTML = html;
+  }catch(err){
+    document.getElementById('detail-content').innerHTML = '<p style="padding:20px;color:var(--red)">Error loading event</p>';
+  }
+}
+
+function toggleMkt(id){
+  if(openMarkets.has(id)) openMarkets.delete(id);
+  else openMarkets.add(id);
+  if(selectedEventId) renderDetail(selectedEventId);
+}
+
+function filterMarkets(){
+  const q = document.getElementById('market-search')?.value.toLowerCase() || '';
+  document.querySelectorAll('#markets-list .market').forEach(el => {
+    el.style.display = el.dataset.name.includes(q) ? '' : 'none';
+  });
+}
+
+// Init
+fetchEvents();
+fetchStats();
+setInterval(fetchEvents, 5000);
+setInterval(fetchStats, 10000);
+</script>
+</body>
+</html>

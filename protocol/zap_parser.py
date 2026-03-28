@@ -886,7 +886,7 @@ class ZapParser:
                 if obj:
                     old = self.state.upsert_selection(obj)
                     ctype = ChangeType.SELECTION_ADDED if old is None else ChangeType.SELECTION_UPDATED
-                    self._emit(ChangeEvent(ctype, etype, eid, topic, old, obj))
+                    self._emit(ChangeEvent(ctype, etype, pa_key, topic, old, obj))
 
         # Remember the topic's relationship to the last-seen entity for
         # future delta resolution.

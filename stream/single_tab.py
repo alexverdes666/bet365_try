@@ -30,11 +30,43 @@ PROXY_HTTP = "http://res.proxy-seller.com:10000"
 PROXY_USER = "4f6d12485ca053d6"
 PROXY_PASS = "OzkAVbyM"
 TARGET_URL = "https://www.bet365.es/#/IP/"
+
+# Pre-match sport pages to crawl for upcoming events (REST blobs)
+PREMATCH_PAGES = [
+    "https://www.bet365.es/#/AS/B1/",    # Football
+    "https://www.bet365.es/#/AS/B18/",   # Basketball
+    "https://www.bet365.es/#/AS/B13/",   # Tennis
+    "https://www.bet365.es/#/AS/B16/",   # Baseball
+    "https://www.bet365.es/#/AS/B17/",   # Ice Hockey
+    "https://www.bet365.es/#/AS/B3/",    # Cricket
+    "https://www.bet365.es/#/AS/B91/",   # Volleyball
+    "https://www.bet365.es/#/AS/B151/",  # eSports
+]
 API_HOST, API_PORT = "0.0.0.0", 8365
 DRIP_BATCH = 5
 DRIP_INTERVAL = 0.5
 NEW_EVENT_SCAN = 10
 USE_PROXY = True
+LOCALE = "_3_0"
+
+# OVM sport module IDs — these return ALL events (live + prematch) for each sport
+# Module IDs differ from sport IDs (discovered from bet365 page traffic)
+OVM_MODULES = [
+    "OVM21", "OVM163", "OVM164", "OVM166",   # Soccer (sport 1)
+    "OVM156", "OVM157",                        # Tennis (13)
+    "OVM175", "OVM176",                        # Basketball (18)
+    "OVM178", "OVM179",                        # Ice Hockey (17)
+    "OVM158", "OVM159",                        # Baseball (16)
+    "OVM172", "OVM173", "OVM174",              # American Football (12)
+    "OVM150", "OVM151", "OVM152",              # Table Tennis (92)
+    "OVM160", "OVM161",                        # Handball (78)
+    "OVM153", "OVM154", "OVM155",              # Volleyball (91)
+    "OVM125", "OVM126", "OVM127", "OVM31",     # eSports (151)
+    "OVM131", "OVM132", "OVM133",              # Cricket (3)
+    "OVM195", "OVM196", "OVM197",              # Badminton (94)
+    "OVM88", "OVM89", "OVM90",                 # Floorball (90)
+    "OVM198", "OVM199",                        # Squash (107)
+]
 
 # Camoufox mw: prefix evaluations — run in the PAGE's actual main world
 JS_HOOK = r"""mw:() => {
@@ -201,6 +233,9 @@ class Stream:
             # Capture all WS frames for the parser
             page.on("websocket", lambda ws: asyncio.ensure_future(self._on_ws(ws)))
 
+            # Capture REST blob responses (pre-match data in ZAP format)
+            page.on("response", lambda resp: asyncio.ensure_future(self._on_rest(resp)))
+
             log.info("Navigating to %s", TARGET_URL)
             try:
                 await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
@@ -225,7 +260,18 @@ class Stream:
             token = await page.evaluate(JS_TOKEN)
             log.info("Ready: refs=%d token=%d events=%d", st["refs"], len(token), len(self.parser.state.events))
 
-            # Subscribe all events
+            # Phase 1: Subscribe OVM sport modules for live + some pre-match
+            log.info("Phase 1: OVM sport modules...")
+            await self._subscribe_ovm(page, token)
+            await asyncio.sleep(8)
+            log.info("After OVM: %d events", len(self.parser.state.events))
+
+            # Phase 2: Crawl pre-match sport pages (REST blobs)
+            log.info("Phase 2: Crawling pre-match pages...")
+            token = await self._crawl_prematch(page, token) or token
+            log.info("After prematch crawl: %d events", len(self.parser.state.events))
+
+            # Phase 3: Subscribe 6V detail topics for ALL events (live + prematch)
             await self._subscribe_all(page, token)
 
             # Monitor loop
@@ -272,6 +318,73 @@ class Stream:
 
         ws.on("framereceived", on_recv)
         ws.on("close", lambda _: log.warning("WS closed: %s", url[:60]))
+
+    async def _on_rest(self, resp):
+        """Capture REST blob responses that contain ZAP-format pre-match data."""
+        try:
+            if "/Api/1/Blob" not in resp.url or resp.status != 200:
+                return
+            body = await resp.text()
+            if len(body) < 200:
+                return
+            # Check if it contains ZAP entity markers
+            if any(marker in body for marker in ("EV;", "MA;", "PA;", "CL;", "CT;")):
+                self.parser.feed(body)
+                self.stats["rest_blobs"] = self.stats.get("rest_blobs", 0) + 1
+        except Exception:
+            pass
+
+    async def _crawl_prematch(self, page, token):
+        """Navigate to pre-match sport pages to trigger REST blob loads."""
+        events_before = len(self.parser.state.events)
+        for url in PREMATCH_PAGES:
+            try:
+                log.info("Crawling pre-match: %s", url)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(6)  # Wait for REST blobs to load
+            except Exception as e:
+                log.warning("Prematch nav error: %s", e)
+
+        # Navigate back to InPlay for live WS
+        try:
+            await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(5)
+        except Exception:
+            pass
+
+        # Re-apply WS hook (page navigated)
+        try:
+            await page.evaluate(JS_HOOK)
+        except Exception:
+            pass
+
+        # Wait for WS to reconnect
+        for _ in range(15):
+            await asyncio.sleep(2)
+            st = await page.evaluate(JS_STATUS)
+            if st["refs"] > 0 and st["token"] > 0:
+                token = await page.evaluate(JS_TOKEN)
+                break
+
+        events_after = len(self.parser.state.events)
+        log.info("Pre-match crawl done: %d -> %d events (+%d), REST blobs=%d",
+                 events_before, events_after, events_after - events_before,
+                 self.stats.get("rest_blobs", 0))
+        return token
+
+    async def _subscribe_ovm(self, page, token):
+        """Subscribe to OVM sport modules to discover pre-match events."""
+        for i in range(0, len(OVM_MODULES), DRIP_BATCH):
+            batch = OVM_MODULES[i : i + DRIP_BATCH]
+            csv = ",".join(batch)
+            try:
+                r = await page.evaluate(js_subscribe(csv, token))
+                if r != "ok":
+                    log.warning("OVM sub: %s", r)
+            except Exception as e:
+                log.warning("OVM sub err: %s", e)
+            await asyncio.sleep(DRIP_INTERVAL)
+        log.info("Subscribed %d OVM sport modules", len(OVM_MODULES))
 
     async def _subscribe_all(self, page, token):
         eids = set(self.parser.state.events.keys()) - self._subbed

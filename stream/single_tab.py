@@ -107,10 +107,13 @@ def _detail_topic(ev):
     """Convert any event topic to 6V detail subscription topic.
     OV format: OV191855685C1A_3_0 -> 6V191855685C1A_3_0
     M format:  M191855685C1_L3_Z0 -> 6V191855685C1A_3_0
+    6V format: already 6V, return as-is (for retries)
     """
     if not ev or not ev.topic:
         return None
     t = ev.topic
+    if t.startswith("6V"):
+        return t  # Already 6V (topic updated by parser after first response)
     if t.startswith("OV"):
         return "6V" + t[2:]
     if t.startswith("M"):
@@ -286,7 +289,7 @@ class Stream:
             await self._subscribe_all(page, token)
 
             # Monitor loop
-            last_scan = last_log = time.time()
+            last_scan = last_log = last_retry = time.time()
             while self._go:
                 await asyncio.sleep(3)
                 now = time.time()
@@ -298,6 +301,21 @@ class Stream:
                         token = await page.evaluate(JS_TOKEN) or token
                         await self._subscribe_events(page, new, token)
                     last_scan = now
+
+                # Retry events stuck at <=1 market every 30s
+                if now - last_retry > 30:
+                    retry_eids = set()
+                    for eid in self._subbed:
+                        mkts = len(self.parser.state.event_markets.get(eid, set()))
+                        if mkts <= 1:
+                            retry_eids.add(eid)
+                    if retry_eids:
+                        # Remove from subbed so they get re-subscribed
+                        self._subbed -= retry_eids
+                        token = await page.evaluate(JS_TOKEN) or token
+                        log.info("Retrying %d events with <=1 market", len(retry_eids))
+                        await self._subscribe_events(page, retry_eids, token)
+                    last_retry = now
 
                 if now - last_log > 30:
                     t = len(self.parser.state.events)

@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Odds Monitor</title>
+<style>
+/* ===== RESET & BASE ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-tertiary: #1a2235;
+  --bg-hover: #1e293b;
+  --bg-active: #243044;
+  --border: #2a3650;
+  --border-light: #334155;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #22c55e;
+  --accent-dim: rgba(34,197,94,0.15);
+  --accent-blue: #3b82f6;
+  --accent-blue-dim: rgba(59,130,246,0.12);
+  --odds-bg: #162032;
+  --odds-border: #2a3a54;
+  --odds-text: #f1f5f9;
+  --suspended: #ef4444;
+  --suspended-dim: rgba(239,68,68,0.12);
+  --yellow: #eab308;
+  --font-mono: 'Consolas', 'SF Mono', 'Fira Code', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sidebar-w: 230px;
+  --detail-w: 480px;
+  --stats-h: 42px;
+  --transition: 180ms ease;
+}
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+/* ===== LAYOUT ===== */
+.app { display: flex; flex-direction: column; height: 100vh; }
+.stats-bar {
+  height: var(--stats-h);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 24px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.stats-bar .stat { display: flex; align-items: center; gap: 6px; }
+.stats-bar .stat-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stats-bar .stat-value { color: var(--text-primary); font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+.stats-bar .refresh-indicator { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.refresh-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ===== SIDEBAR ===== */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.sport-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background var(--transition);
+  gap: 10px;
+  border-left: 3px solid transparent;
+}
+.sport-item:hover { background: var(--bg-hover); }
+.sport-item.active {
+  background: var(--bg-active);
+  border-left-color: var(--accent);
+}
+.sport-icon { font-size: 16px; width: 22px; text-align: center; flex-shrink: 0; }
+.sport-label { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sport-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  padding: 1px 7px;
+  border-radius: 10px;
+  min-width: 26px;
+  text-align: center;
+}
+
+/* ===== MAIN CONTENT ===== */
+.content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0;
+}
+.search-bar-container {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.search-input {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 12px 7px 32px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.search-input:focus { border-color: var(--accent-blue); }
+.search-bar-container { position: relative; }
+.search-icon {
+  position: absolute;
+  left: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.competition-group { margin-bottom: 2px; }
+.competition-header {
+  padding: 8px 16px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  position: sticky;
+  top: 44px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.competition-header .comp-sport {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* ===== EVENT ROWS ===== */
+.event-row {
+  display: grid;
+  grid-template-columns: 70px 1fr auto auto;
+  align-items: center;
+  padding: 7px 16px;
+  border-bottom: 1px solid rgba(42,54,80,0.5);
+  cursor: pointer;
+  transition: background var(--transition);
+  gap: 12px;
+  min-height: 42px;
+}
+.event-row:hover { background: var(--bg-hover); }
+.event-row.selected { background: var(--accent-blue-dim); }
+
+.event-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+.live-minute {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+}
+.prematch-time {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.event-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.event-teams {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-teams .team-home { color: var(--text-primary); }
+.event-teams .vs { color: var(--text-muted); margin: 0 4px; font-size: 11px; }
+.event-teams .team-away { color: var(--text-secondary); }
+.event-score {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--yellow);
+  letter-spacing: 1px;
+  min-width: 48px;
+  text-align: center;
+}
+
+.event-odds {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.odds-cell {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--odds-bg);
+  border: 1px solid var(--odds-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  min-width: 52px;
+  text-align: center;
+  color: var(--odds-text);
+  transition: background var(--transition);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.odds-cell .odds-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-weight: 400;
+  text-transform: uppercase;
+}
+.odds-cell.suspended {
+  background: var(--suspended-dim);
+  border-color: rgba(239,68,68,0.3);
+  color: var(--suspended);
+}
+.event-markets-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 30px;
+  text-align: right;
+}
+
+/* ===== DETAIL PANEL ===== */
+.detail-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+.detail-overlay.open { display: flex; }
+.detail-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+}
+.detail-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--detail-w);
+  max-width: 90vw;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  animation: slide-in 200ms ease-out;
+  z-index: 1;
+}
+@keyframes slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.detail-close {
+  position: absolute;
+  top: 12px; right: 14px;
+  background: none; border: none; color: var(--text-muted);
+  font-size: 20px; cursor: pointer; z-index: 2;
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  transition: background var(--transition), color var(--transition);
+}
+.detail-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.detail-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.detail-sport { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.detail-teams-row { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
+.detail-team { font-size: 18px; font-weight: 600; flex: 1; }
+.detail-team.home { text-align: right; }
+.detail-team.away { text-align: left; }
+.detail-score-box {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--yellow);
+  background: var(--bg-primary);
+  border-radius: 6px;
+  padding: 4px 14px;
+  letter-spacing: 2px;
+  min-width: 80px;
+  text-align: center;
+}
+.detail-meta {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.detail-meta .live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.detail-meta .live-badge .live-dot { width: 6px; height: 6px; }
+
+.detail-search {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.detail-search input {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+.detail-search input:focus { border-color: var(--accent-blue); }
+.detail-market-count { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; }
+
+.detail-markets {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.market-section { border-bottom: 1px solid rgba(42,54,80,0.4); }
+.market-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: background var(--transition);
+  gap: 8px;
+}
+.market-header:hover { background: var(--bg-hover); }
+.market-chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 200ms ease;
+  flex-shrink: 0;
+}
+.market-chevron.open { transform: rotate(90deg); }
+.market-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+}
+.market-sel-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.market-suspended-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--suspended);
+  background: var(--suspended-dim);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.market-body {
+  display: none;
+  padding: 4px 20px 14px;
+}
+.market-body.open { display: block; }
+.selections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px;
+}
+.selection-cell {
+  background: var(--odds-bg);
+  border: 1px solid var(--odds-border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  text-align: center;
+  transition: background var(--transition);
+}
+.selection-cell:hover { background: var(--bg-active); }
+.selection-cell.suspended {
+  background: var(--suspended-dim);
+  border-color: rgba(239,68,68,0.2);
+}
+.selection-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.selection-odds {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--odds-text);
+}
+.selection-cell.suspended .selection-odds { color: var(--suspended); }
+.selection-handicap {
+  font-size: 10px;
+  color: var(--accent-blue);
+  margin-bottom: 2px;
+}
+
+.no-markets {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.error-message {
+  padding: 20px;
+  text-align: center;
+  color: var(--suspended);
+  font-size: 13px;
+}
+
+/* empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: var(--text-muted);
+  gap: 8px;
+}
+.empty-state .big-icon { font-size: 40px; opacity: 0.4; }
+
+/* no-markets badge inline */
+.no-mkts-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Stats Bar -->
+  <div class="stats-bar">
+    <div class="stat">
+      <span class="stat-label">Events</span>
+      <span class="stat-value" id="stat-events">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Live</span>
+      <span class="stat-value" id="stat-live" style="color:var(--accent)">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">With Markets</span>
+      <span class="stat-value" id="stat-with-markets">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Markets</span>
+      <span class="stat-value" id="stat-markets">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Selections</span>
+      <span class="stat-value" id="stat-selections">--</span>
+    </div>
+    <div class="refresh-indicator">
+      <div class="refresh-dot"></div>
+      <span>LIVE</span>
+      <span id="last-update" style="margin-left: 4px"></span>
+    </div>
+  </div>
+
+  <!-- Main Layout -->
+  <div class="main-layout">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-header">Sports</div>
+      <div class="sidebar-list" id="sports-list"></div>
+    </div>
+
+    <!-- Content -->
+    <div class="content" id="main-content">
+      <div class="search-bar-container">
+        <span class="search-icon">&#x1F50D;</span>
+        <input class="search-input" id="event-search" type="text" placeholder="Search events..." autocomplete="off">
+      </div>
+      <div id="events-container">
+        <div class="loading">Connecting to data feed...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Overlay -->
+<div class="detail-overlay" id="detail-overlay">
+  <div class="detail-backdrop" id="detail-backdrop"></div>
+  <div class="detail-panel" id="detail-panel">
+    <button class="detail-close" id="detail-close">&times;</button>
+    <div class="detail-header" id="detail-header"></div>
+    <div class="detail-search">
+      <input type="text" id="market-search" placeholder="Filter markets..." autocomplete="off">
+      <span class="detail-market-count" id="detail-market-count"></span>
+    </div>
+    <div class="detail-markets" id="detail-markets"></div>
+  </div>
+</div>
+
+<script>
+// ===== CONFIG =====
+const API_BASE = 'http://localhost:8365';
+const REFRESH_INTERVAL = 5000;
+
+// ===== SPORT ICONS =====
+const SPORT_ICONS = {
+  '1': '\u26BD', '13': '\uD83C\uDFBE', '18': '\uD83C\uDFC0', '16': '\u26BE',
+  '17': '\uD83C\uDFD2', '3': '\uD83C\uDFCF', '91': '\uD83C\uDFD0', '92': '\uD83C\uDFD3',
+  '78': '\uD83E\uDD3E', '151': '\uD83C\uDFAE', '7': '\u26F3', '15': '\uD83C\uDFAF',
+  '83': '\u26BD', '95': '\uD83C\uDFD0', '12': '\uD83C\uDFC8', '4': '\uD83D\uDC15',
+  '2': '\uD83C\uDFC7', '94': '\uD83C\uDFF8', '117': '\uD83E\uDD4E',
+};
+const SPORT_NAMES = {
+  '1': 'Football', '13': 'Tennis', '18': 'Basketball', '16': 'Baseball',
+  '17': 'Ice Hockey', '3': 'Cricket', '91': 'Volleyball', '92': 'Table Tennis',
+  '78': 'Handball', '151': 'eSports', '7': 'Golf', '15': 'Darts',
+  '83': 'Futsal', '95': 'Beach Volleyball', '12': 'American Football',
+  '4': 'Greyhounds', '2': 'Horse Racing', '94': 'Badminton', '117': 'Softball',
+};
+
+const MAIN_MARKET_PATTERNS = [
+  /fulltime\s*result/i, /full\s*time\s*result/i, /match\s*winner/i,
+  /\bto\s*win\b/i, /\bganador\b/i, /\bwinner\b/i, /\bmoney\s*line\b/i,
+];
+
+// ===== STATE =====
+let allEvents = [];
+let filteredEvents = [];
+let selectedSportId = null;
+let selectedEventId = null;
+let searchQuery = '';
+let detailEvent = null;
+let marketSearchQuery = '';
+let expandedMarkets = new Set();
+let refreshTimer = null;
+
+// ===== VIRTUAL SPORT FILTER =====
+function isVirtualSport(sportId) {
+  const n = parseInt(sportId, 10);
+  if (isNaN(n)) return false;
+  if (n >= 144 && n <= 146) return true;
+  if (n >= 2019) return true;
+  return false;
+}
+
+// ===== FILTERING MARKETS/SELECTIONS =====
+function filterMarkets(markets) {
+  if (!markets) return [];
+  return markets.filter(m => {
+    if (!m.name || m.name.trim() === '') return false;
+    const validSels = (m.selections || []).filter(s => s.odds && s.odds.trim() !== '');
+    return validSels.length > 0;
+  });
+}
+
+function validSelections(selections) {
+  return (selections || []).filter(s => s.odds && s.odds.trim() !== '');
+}
+
+// ===== DATA FETCH =====
+async function fetchEvents() {
+  try {
+    const resp = await fetch(API_BASE + '/events');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    return Array.isArray(data) ? data : (data.events || []);
+  } catch (e) {
+    console.error('Fetch error:', e);
+    return null;
+  }
+}
+
+async function fetchEventDetail(eventId) {
+  try {
+    const resp = await fetch(API_BASE + '/event/' + encodeURIComponent(eventId));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return await resp.json();
+  } catch (e) {
+    console.error('Detail fetch error:', e);
+    return null;
+  }
+}
+
+// ===== PARSING =====
+function isLive(ev) {
+  return ev.minute && ev.minute.trim() !== '';
+}
+
+function parseTeams(name) {
+  if (!name) return { home: '', away: '' };
+  // Try common separators
+  const separators = [' v ', ' vs ', ' - ', ' @ '];
+  for (const sep of separators) {
+    const idx = name.indexOf(sep);
+    if (idx > 0) {
+      return { home: name.substring(0, idx).trim(), away: name.substring(idx + sep.length).trim() };
+    }
+  }
+  return { home: name, away: '' };
+}
+
+function formatOdds(odds) {
+  if (!odds || odds.trim() === '') return '';
+  const n = parseFloat(odds);
+  return isNaN(n) ? odds : n.toFixed(2);
+}
+
+function formatMinute(ev) {
+  const m = ev.minute || '';
+  if (!m) return '';
+  // Handle half-time etc
+  if (m === 'HT' || m === 'ht') return 'HT';
+  if (m === 'FT' || m === 'ft') return 'FT';
+  if (m === 'Break' || m === 'break') return 'BRK';
+  const num = parseInt(m, 10);
+  if (!isNaN(num)) {
+    const suffix = ev.time_type === '1' ? "'" : "'";
+    return num + suffix;
+  }
+  return m;
+}
+
+function formatTimestamp(ts) {
+  if (!ts || ts.length < 12) return '';
+  // Format: YYYYMMDDHHmmSS
+  const month = ts.substring(4, 6);
+  const day = ts.substring(6, 8);
+  const hour = ts.substring(8, 10);
+  const min = ts.substring(10, 12);
+  return day + '/' + month + ' ' + hour + ':' + min;
+}
+
+function findMainMarket(markets) {
+  const filtered = filterMarkets(markets);
+  if (filtered.length === 0) return null;
+  // Try name patterns first
+  for (const pattern of MAIN_MARKET_PATTERNS) {
+    const found = filtered.find(m => pattern.test(m.name));
+    if (found) return found;
+  }
+  // Try market_type "10" (Fulltime Result common type)
+  const ftResult = filtered.find(m => m.market_type === '10');
+  if (ftResult) return ftResult;
+  // Try first market with 3 selections
+  const three = filtered.find(m => validSelections(m.selections).length === 3);
+  if (three) return three;
+  // Try first market with 2 selections
+  const two = filtered.find(m => validSelections(m.selections).length === 2);
+  if (two) return two;
+  return null;
+}
+
+function sportName(ev) {
+  if (ev.sport_name && ev.sport_name.trim()) return ev.sport_name.trim();
+  return SPORT_NAMES[ev.sport_id] || '';
+}
+
+function sportIcon(sportId) {
+  return SPORT_ICONS[sportId] || '\uD83C\uDFC6';
+}
+
+function competitionKey(ev) {
+  return (ev.competition_id || '') + '||' + (ev.competition_name || sportName(ev) || 'Other');
+}
+
+// ===== RENDER SIDEBAR =====
+function renderSidebar(events) {
+  const sportCounts = {};
+  const sportNameMap = {};
+  let totalLive = 0;
+
+  events.forEach(ev => {
+    const sid = ev.sport_id || '0';
+    sportCounts[sid] = (sportCounts[sid] || 0) + 1;
+    if (!sportNameMap[sid]) {
+      sportNameMap[sid] = sportName(ev);
+    }
+    if (isLive(ev)) totalLive++;
+  });
+
+  // Sort by count desc
+  const sorted = Object.entries(sportCounts).sort((a, b) => b[1] - a[1]);
+
+  const container = document.getElementById('sports-list');
+  let html = '';
+
+  // All item
+  html += `<div class="sport-item ${selectedSportId === null ? 'active' : ''}" data-sport="">
+    <span class="sport-icon">\uD83C\uDFDF\uFE0F</span>
+    <span class="sport-label">All Sports</span>
+    <span class="sport-count">${events.length}</span>
+  </div>`;
+
+  for (const [sid, count] of sorted) {
+    const name = sportNameMap[sid] || ('Sport ' + sid);
+    const icon = sportIcon(sid);
+    const active = selectedSportId === sid ? 'active' : '';
+    html += `<div class="sport-item ${active}" data-sport="${sid}">
+      <span class="sport-icon">${icon}</span>
+      <span class="sport-label">${escHtml(name)}</span>
+      <span class="sport-count">${count}</span>
+    </div>`;
+  }
+
+  container.innerHTML = html;
+
+  // Attach events
+  container.querySelectorAll('.sport-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const sid = el.dataset.sport;
+      selectedSportId = sid || null;
+      applyFilters();
+      renderSidebar(allEvents);
+      renderEvents();
+    });
+  });
+
+  // Update stats
+  document.getElementById('stat-live').textContent = totalLive;
+}
+
+// ===== RENDER EVENTS =====
+function renderEvents() {
+  const container = document.getElementById('events-container');
+  if (filteredEvents.length === 0) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="big-icon">\uD83C\uDFDF\uFE0F</div>
+      <div>No events found</div>
+    </div>`;
+    return;
+  }
+
+  // Group by competition
+  const groups = new Map();
+  filteredEvents.forEach(ev => {
+    const key = competitionKey(ev);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ev);
+  });
+
+  // Sort within each group: live first, then by minute desc
+  groups.forEach((evs) => {
+    evs.sort((a, b) => {
+      const aLive = isLive(a) ? 1 : 0;
+      const bLive = isLive(b) ? 1 : 0;
+      if (aLive !== bLive) return bLive - aLive;
+      return 0;
+    });
+  });
+
+  // Build HTML using DocumentFragment-like approach (string concat for speed)
+  let html = '';
+  for (const [key, evs] of groups) {
+    const compName = key.split('||')[1] || '';
+    const firstEv = evs[0];
+    const sname = sportName(firstEv);
+    html += `<div class="competition-group">`;
+    html += `<div class="competition-header">`;
+    html += `<span>${sportIcon(firstEv.sport_id)}</span>`;
+    if (sname && compName && sname !== compName) {
+      html += `<span class="comp-sport">${escHtml(sname)} /</span>`;
+    }
+    html += `<span>${escHtml(compName)}</span>`;
+    html += `</div>`;
+
+    for (const ev of evs) {
+      html += renderEventRow(ev);
+    }
+    html += `</div>`;
+  }
+
+  container.innerHTML = html;
+
+  // Attach click events
+  container.querySelectorAll('.event-row').forEach(el => {
+    el.addEventListener('click', () => {
+      const eid = el.dataset.eventId;
+      openDetailPanel(eid);
+    });
+  });
+}
+
+function renderEventRow(ev) {
+  const live = isLive(ev);
+  const teams = parseTeams(ev.name);
+  const markets = filterMarkets(ev.markets);
+  const mainMarket = findMainMarket(ev.markets);
+  const selected = selectedEventId === ev.id ? ' selected' : '';
+
+  let timeHtml = '';
+  if (live) {
+    timeHtml = `<span class="live-dot"></span><span class="live-minute">${escHtml(formatMinute(ev))}</span>`;
+  } else if (ev.timestamp) {
+    timeHtml = `<span class="prematch-time">${escHtml(formatTimestamp(ev.timestamp))}</span>`;
+  }
+
+  let teamsHtml = '';
+  if (teams.away) {
+    teamsHtml = `<span class="team-home">${escHtml(teams.home)}</span><span class="vs">v</span><span class="team-away">${escHtml(teams.away)}</span>`;
+  } else {
+    teamsHtml = `<span class="team-home">${escHtml(ev.name || '')}</span>`;
+  }
+
+  let scoreHtml = '';
+  if (ev.score && ev.score.trim()) {
+    scoreHtml = escHtml(ev.score);
+  }
+
+  let oddsHtml = '';
+  if (mainMarket) {
+    const sels = validSelections(mainMarket.selections);
+    const sorted = sels.sort((a, b) => parseInt(a.order || '0') - parseInt(b.order || '0'));
+    const display = sorted.slice(0, 3);
+    for (const sel of display) {
+      const susp = sel.suspended === '1' || mainMarket.suspended === '1';
+      const label = sel.name && sel.name.trim() ? escHtml(sel.name.trim()) : '';
+      oddsHtml += `<div class="odds-cell${susp ? ' suspended' : ''}">`;
+      if (label) oddsHtml += `<span class="odds-label">${label}</span>`;
+      oddsHtml += `<span>${susp ? 'SUSP' : formatOdds(sel.odds)}</span></div>`;
+    }
+  } else if (markets.length === 0 && (!ev.markets || ev.markets.length === 0)) {
+    oddsHtml = `<span class="no-mkts-badge">No markets</span>`;
+  }
+
+  let mktsCountHtml = '';
+  if (markets.length > 0) {
+    mktsCountHtml = `<span class="event-markets-count">+${markets.length}</span>`;
+  }
+
+  return `<div class="event-row${selected}" data-event-id="${escAttr(ev.id)}">
+    <div class="event-time">${timeHtml}</div>
+    <div class="event-info"><div class="event-teams">${teamsHtml}</div></div>
+    <div class="event-score">${scoreHtml}</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="event-odds">${oddsHtml}</div>
+      ${mktsCountHtml}
+    </div>
+  </div>`;
+}
+
+// ===== DETAIL PANEL =====
+async function openDetailPanel(eventId) {
+  selectedEventId = eventId;
+  expandedMarkets.clear();
+  marketSearchQuery = '';
+  document.getElementById('market-search').value = '';
+
+  const overlay = document.getElementById('detail-overlay');
+  overlay.classList.add('open');
+
+  renderDetailLoading();
+  renderEvents(); // Update selected style
+
+  // Try to find in allEvents first for instant display
+  const cached = allEvents.find(e => e.id === eventId);
+  if (cached) {
+    detailEvent = cached;
+    renderDetail();
+  }
+
+  // Then fetch fresh detail
+  const fresh = await fetchEventDetail(eventId);
+  if (fresh && selectedEventId === eventId) {
+    detailEvent = fresh;
+    renderDetail();
+  }
+}
+
+function closeDetailPanel() {
+  selectedEventId = null;
+  detailEvent = null;
+  expandedMarkets.clear();
+  document.getElementById('detail-overlay').classList.remove('open');
+  renderEvents();
+}
+
+function renderDetailLoading() {
+  document.getElementById('detail-header').innerHTML = '<div class="loading" style="height:80px">Loading...</div>';
+  document.getElementById('detail-markets').innerHTML = '';
+  document.getElementById('detail-market-count').textContent = '';
+}
+
+function renderDetail() {
+  const ev = detailEvent;
+  if (!ev) return;
+
+  const teams = parseTeams(ev.name);
+  const live = isLive(ev);
+  const sname = sportName(ev);
+
+  let headerHtml = '';
+  if (sname) {
+    headerHtml += `<div class="detail-sport">${sportIcon(ev.sport_id)} ${escHtml(sname)}`;
+    if (ev.competition_name && ev.competition_name.trim()) {
+      headerHtml += ` / ${escHtml(ev.competition_name)}`;
+    }
+    headerHtml += `</div>`;
+  }
+
+  headerHtml += `<div class="detail-teams-row">`;
+  headerHtml += `<div class="detail-team home">${escHtml(teams.home)}</div>`;
+  if (ev.score && ev.score.trim()) {
+    headerHtml += `<div class="detail-score-box">${escHtml(ev.score)}</div>`;
+  } else {
+    headerHtml += `<div class="detail-score-box" style="font-size:16px;color:var(--text-muted)">vs</div>`;
+  }
+  headerHtml += `<div class="detail-team away">${escHtml(teams.away || ev.name || '')}</div>`;
+  headerHtml += `</div>`;
+
+  headerHtml += `<div class="detail-meta">`;
+  if (live) {
+    headerHtml += `<span class="live-badge"><span class="live-dot"></span>LIVE ${escHtml(formatMinute(ev))}</span>`;
+  } else if (ev.timestamp) {
+    headerHtml += `<span>${escHtml(formatTimestamp(ev.timestamp))}</span>`;
+  }
+  headerHtml += `</div>`;
+
+  document.getElementById('detail-header').innerHTML = headerHtml;
+  renderDetailMarkets();
+}
+
+function renderDetailMarkets() {
+  const ev = detailEvent;
+  if (!ev) return;
+
+  const markets = filterMarkets(ev.markets);
+  const query = marketSearchQuery.toLowerCase().trim();
+  const filtered = query ? markets.filter(m => m.name.toLowerCase().includes(query)) : markets;
+
+  // Count
+  let totalSels = 0;
+  filtered.forEach(m => { totalSels += validSelections(m.selections).length; });
+  document.getElementById('detail-market-count').textContent = filtered.length + ' mkts / ' + totalSels + ' sels';
+
+  if (filtered.length === 0) {
+    document.getElementById('detail-markets').innerHTML = `<div class="no-markets">${markets.length === 0 ? 'No markets available for this event' : 'No markets match your filter'}</div>`;
+    return;
+  }
+
+  let html = '';
+  for (const m of filtered) {
+    const sels = validSelections(m.selections);
+    const isExpanded = expandedMarkets.has(m.id);
+    const isSuspended = m.suspended === '1';
+
+    html += `<div class="market-section">`;
+    html += `<div class="market-header" data-market-id="${escAttr(m.id)}">`;
+    html += `<span class="market-chevron${isExpanded ? ' open' : ''}">\u25B6</span>`;
+    html += `<span class="market-name">${escHtml(m.name)}</span>`;
+    if (isSuspended) html += `<span class="market-suspended-badge">Suspended</span>`;
+    html += `<span class="market-sel-count">${sels.length}</span>`;
+    html += `</div>`;
+
+    if (isExpanded) {
+      html += `<div class="market-body open">`;
+      html += `<div class="selections-grid">`;
+      const sortedSels = sels.sort((a, b) => parseInt(a.order || '0') - parseInt(b.order || '0'));
+      for (const sel of sortedSels) {
+        const susp = sel.suspended === '1' || isSuspended;
+        const hcap = sel.handicap_display && sel.handicap_display.trim() ? sel.handicap_display.trim() :
+                     (sel.handicap && sel.handicap.trim() ? sel.handicap.trim() : '');
+        html += `<div class="selection-cell${susp ? ' suspended' : ''}">`;
+        if (hcap) html += `<div class="selection-handicap">${escHtml(hcap)}</div>`;
+        if (sel.name && sel.name.trim()) html += `<div class="selection-name" title="${escAttr(sel.name)}">${escHtml(sel.name)}</div>`;
+        html += `<div class="selection-odds">${susp ? 'SUSP' : formatOdds(sel.odds)}</div>`;
+        html += `</div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  document.getElementById('detail-markets').innerHTML = html;
+
+  // Attach market toggle events
+  document.querySelectorAll('#detail-markets .market-header').forEach(el => {
+    el.addEventListener('click', () => {
+      const mid = el.dataset.marketId;
+      if (expandedMarkets.has(mid)) {
+        expandedMarkets.delete(mid);
+      } else {
+        expandedMarkets.add(mid);
+      }
+      renderDetailMarkets();
+    });
+  });
+}
+
+// ===== FILTERING =====
+function applyFilters() {
+  filteredEvents = allEvents.filter(ev => {
+    if (selectedSportId && ev.sport_id !== selectedSportId) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const name = (ev.name || '').toLowerCase();
+      const comp = (ev.competition_name || '').toLowerCase();
+      if (!name.includes(q) && !comp.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// ===== STATS =====
+function updateStats(events) {
+  let totalMarkets = 0;
+  let totalSelections = 0;
+  let withMarkets = 0;
+
+  events.forEach(ev => {
+    const fm = filterMarkets(ev.markets);
+    if (fm.length > 0) withMarkets++;
+    totalMarkets += fm.length;
+    fm.forEach(m => {
+      totalSelections += validSelections(m.selections).length;
+    });
+  });
+
+  document.getElementById('stat-events').textContent = events.length;
+  document.getElementById('stat-with-markets').textContent = withMarkets;
+  document.getElementById('stat-markets').textContent = totalMarkets.toLocaleString();
+  document.getElementById('stat-selections').textContent = totalSelections.toLocaleString();
+
+  const now = new Date();
+  document.getElementById('last-update').textContent =
+    String(now.getHours()).padStart(2, '0') + ':' +
+    String(now.getMinutes()).padStart(2, '0') + ':' +
+    String(now.getSeconds()).padStart(2, '0');
+}
+
+// ===== HTML ESCAPE =====
+function escHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function escAttr(str) {
+  return escHtml(str);
+}
+
+// ===== MAIN REFRESH LOOP =====
+async function refresh() {
+  const events = await fetchEvents();
+  if (events === null) {
+    // Keep existing data, show error briefly
+    return;
+  }
+
+  // Filter out virtual sports
+  allEvents = events.filter(ev => !isVirtualSport(ev.sport_id));
+
+  applyFilters();
+  renderSidebar(allEvents);
+  renderEvents();
+  updateStats(allEvents);
+
+  // If detail panel open, refresh it
+  if (selectedEventId && detailEvent) {
+    const fresh = await fetchEventDetail(selectedEventId);
+    if (fresh && selectedEventId === fresh.id) {
+      detailEvent = fresh;
+      renderDetail();
+    }
+  }
+}
+
+// ===== EVENT LISTENERS =====
+document.getElementById('event-search').addEventListener('input', (e) => {
+  searchQuery = e.target.value;
+  applyFilters();
+  renderEvents();
+});
+
+document.getElementById('market-search').addEventListener('input', (e) => {
+  marketSearchQuery = e.target.value;
+  renderDetailMarkets();
+});
+
+document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
+document.getElementById('detail-backdrop').addEventListener('click', closeDetailPanel);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDetailPanel();
+});
+
+// ===== INIT =====
+(async function init() {
+  await refresh();
+  refreshTimer = setInterval(refresh, REFRESH_INTERVAL);
+})();
+</script>
+</body>
+</html>

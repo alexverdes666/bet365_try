@@ -1028,6 +1028,119 @@ class ZapParser:
         """Try to look up a parent entity ID for *topic* from previous loads."""
         return self._topic_parent.get(topic, "")
 
+    # -- market name enrichment -----------------------------------------------
+
+    # bet365 market type codes → descriptive English names.
+    # Extracted from topic IT field: 6V{event}-{code}[-variant]_{locale}
+    _MARKET_TYPE_NAMES: Dict[str, str] = {
+        # Football
+        "1777": "Fulltime Result", "1778": "Next Goal", "10001": "Correct Score",
+        "10115": "Double Chance", "10562": "Goals Odd/Even", "10563": "Draw No Bet",
+        "10564": "Next Team to Score", "10565": "Both Teams to Score",
+        "10566": "Halftime Result", "10567": "Home Clean Sheet",
+        "10568": "Handicap", "10569": "Halftime/Fulltime",
+        "10570": "Away Clean Sheet", "10571": "Match Goals Over/Under",
+        "10572": "Home Total Goals", "10573": "Away Total Goals",
+        "50180": "Home Win/Draw", "50181": "Away Win/Draw",
+        "50246": "Halftime Result", "50365": "Home Exact Goals",
+        "50366": "Away Exact Goals", "50391": "Both Teams to Score 2nd Half",
+        "50396": "Home Total Goals", "50397": "Away Total Goals",
+        # Basketball
+        "1446": "Spread", "1450": "Total Points Over/Under",
+        "1763": "Match Winner", "180032": "Quarter Winner",
+        "180061": "Quarter Spread", "180239": "Home Player Points",
+        "180240": "Away Player Points", "180243": "Home Player Rebounds",
+        "180373": "Away Player Assists",
+        # Tennis
+        "920054": "Match Winner", "920055": "Set Winner",
+        "910080": "Match Winner", "910081": "Set Winner",
+        # Ice Hockey
+        "130020": "Match Result", "130078": "Total Goals Over/Under",
+        "130245": "Puck Line", "130468": "Period Winner",
+        "130476": "Period Total Goals",
+        # Baseball
+        "160030": "Match Winner", "160031": "Run Line",
+        "160033": "Total Runs Over/Under", "160045": "Home Spread",
+        "160046": "Away Spread", "160050": "Correct Score",
+        "160053": "Innings Winner", "160056": "Innings Score",
+        # Cricket
+        "30132": "To Reach 50", "30133": "To Reach 100",
+        "30154": "Match Winner", "30161": "To Reach 50",
+        # Golf
+        "70055": "End of Round Leader", "70142": "Hole Winner",
+        "70154": "Outright Winner",
+        # General
+        "10124": "Asian Handicap", "10147": "1st Half Over/Under",
+        "10148": "2nd Half Over/Under",
+        # Horse Racing
+        "40210": "Win/Place",
+        # Volleyball
+        "80158": "Line (Incl. Tie)",
+    }
+
+    @staticmethod
+    def _extract_market_code(topic: str) -> str:
+        """Extract market type code from topic: 6V{n}-{code}[-variant]_{locale}"""
+        import re
+        m = re.search(r'-(\d+)(?:-[^_]+)?_\d+_\d+', topic or '')
+        return m.group(1) if m else ''
+
+    def _enrich_market_name(self, mkt) -> str:
+        """Generate a descriptive market name from available data."""
+        name = mkt.name.strip() if mkt.name else ''
+        topic = mkt.topic or mkt.raw.get('IT', '')
+        mt = mkt.market_type or ''
+
+        # If we already have a good descriptive name, keep it
+        if name and len(name) > 2 and name not in ('1', '2', 'X'):
+            # Check if it's a team name being used as market name (e.g., "Bulls FC Academy")
+            # Team names as market names happen for player/team-specific markets
+            pass
+
+        # Try market_type field first
+        if mt and mt in self._MARKET_TYPE_NAMES:
+            return self._MARKET_TYPE_NAMES[mt]
+
+        # Try extracting code from IT/topic
+        code = self._extract_market_code(topic)
+        if code and code in self._MARKET_TYPE_NAMES:
+            return self._MARKET_TYPE_NAMES[code]
+
+        # Infer from selection patterns
+        sels = list(self.state.market_selections.get(mkt.id, set()))
+        sel_objs = [self.state.selections.get(sid) for sid in sels]
+        sel_objs = [s for s in sel_objs if s]
+        sel_names = [s.name for s in sel_objs if s.name]
+        has_hcap = any(s.handicap for s in sel_objs)
+
+        if not name or name in ('', ' '):
+            if set(sel_names) == {'Yes', 'No'}:
+                return 'Both Teams to Score'
+            if set(sel_names) == {'Odd', 'Even'}:
+                return 'Goals Odd/Even'
+            if 'or Draw' in ' '.join(sel_names):
+                return 'Double Chance'
+            if any('Goal' in n for n in sel_names) and any(n.isdigit() or 'No' in n for n in sel_names):
+                return 'Total Goals'
+            if has_hcap:
+                return 'Handicap'
+
+        # For generic names like "Over"/"Under" with handicap, add context
+        if name in ('Over', 'Under') and has_hcap:
+            hcaps = [s.handicap for s in sel_objs if s.handicap]
+            if hcaps:
+                h = hcaps[0]
+                try:
+                    hval = float(h)
+                    if hval >= 6:
+                        return f'Corners {name}'
+                    else:
+                        return f'Goals {name}'
+                except ValueError:
+                    pass
+
+        return name or 'Market'
+
     # -- query methods -------------------------------------------------------
 
     @staticmethod
@@ -1072,7 +1185,7 @@ class ZapParser:
                     continue
                 mkt_dict: Dict[str, Any] = {
                     "id": mkt.id,
-                    "name": mkt.name,
+                    "name": self._enrich_market_name(mkt),
                     "market_type": mkt.market_type,
                     "suspended": mkt.suspended,
                     "selections": [],
@@ -1136,7 +1249,7 @@ class ZapParser:
                 continue
             mkt_dict: Dict[str, Any] = {
                 "id": mkt.id,
-                "name": mkt.name,
+                "name": self._enrich_market_name(mkt),
                 "market_type": mkt.market_type,
                 "columns": mkt.columns,
                 "suspended": mkt.suspended,

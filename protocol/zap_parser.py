@@ -1207,6 +1207,12 @@ class ZapParser:
         """
         results: List[Dict[str, Any]] = []
         for ev in self.state.events.values():
+            # Skip OVM phantom container events (small numeric IDs, no name)
+            if not ev.name and ev.id.isdigit() and int(ev.id) < 10000:
+                continue
+            # Skip config/system entries with no name
+            if not ev.name and (not ev.topic or ev.topic.startswith("PVG_") or ev.topic == "P-ENDP"):
+                continue
             entry: Dict[str, Any] = {
                 "id": ev.id,
                 "name": ev.name,

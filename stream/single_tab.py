@@ -29,7 +29,7 @@ log = logging.getLogger("single_tab")
 PROXY_HTTP = "http://res.proxy-seller.com:10000"
 PROXY_USER = "4f6d12485ca053d6"
 PROXY_PASS = "OzkAVbyM"
-TARGET_URL = "https://www.bet365.es/#/IP/"
+TARGET_URL = "https://www.bet365.com.au/#/IP/"
 
 # Pre-match sport pages to crawl for upcoming events (REST blobs)
 PREMATCH_PAGES = [

@@ -1125,19 +1125,31 @@ class ZapParser:
 
     def _enrich_market_name(self, mkt) -> str:
         """Generate a descriptive market name from available data."""
-        # Priority 1: group_name from MG entity (definitive from server)
-        if hasattr(mkt, 'group_name') and mkt.group_name:
-            return mkt.group_name
+        orig_name = mkt.name.strip() if mkt.name else ''
+        group_name = ''
 
-        name = mkt.name.strip() if mkt.name else ''
+        # Get MG group name
+        if hasattr(mkt, 'group_name') and mkt.group_name:
+            group_name = mkt.group_name
+        elif hasattr(self, '_mg_names'):
+            mt = mkt.market_type or ''
+            if mt and mt in self._mg_names:
+                group_name = self._mg_names[mt]
+
+        if group_name:
+            # Combine MG group name with MA variant label
+            # MA name might be "1", "2", "X", "Over", "Under", team name, etc.
+            if orig_name and orig_name != group_name and orig_name.strip():
+                # Skip if orig_name is just a subset of group_name
+                if orig_name not in group_name:
+                    return f"{group_name} - {orig_name}"
+            return group_name
+
+        name = orig_name
         topic = mkt.topic or mkt.raw.get('IT', '')
         mt = mkt.market_type or ''
 
-        # Priority 2: MG name lookup by market_type
-        if hasattr(self, '_mg_names') and mt and mt in self._mg_names:
-            return self._mg_names[mt]
-
-        # Priority 3: if we already have a good descriptive name, keep it
+        # If we already have a good descriptive name, keep it
         if name and len(name) > 2 and name not in ('1', '2', 'X'):
             pass
 
@@ -1256,6 +1268,16 @@ class ZapParser:
                 handicaps = sorted(set(s["handicap"] for s in selections if s.get("handicap")))
                 if handicaps:
                     base_name = f"{base_name} ({', '.join(handicaps)})"
+                # Track seen names and append counter for duplicates
+                count = seen_names.get(base_name, 0) + 1
+                seen_names[base_name] = count
+                if count > 1:
+                    # Try to differentiate using first selection name
+                    first_sel = next((s["name"] for s in selections if s.get("name") and s.get("odds")), "")
+                    if first_sel:
+                        base_name = f"{base_name} ({first_sel}...)"
+                    else:
+                        base_name = f"{base_name} #{count}"
                 mkt_dict: Dict[str, Any] = {
                     "id": mkt.id,
                     "name": base_name,
@@ -1304,6 +1326,7 @@ class ZapParser:
         if sport:
             result["sport_name"] = sport.name
 
+        seen_names: Dict[str, int] = {}
         for mid in sorted(self.state.event_markets.get(ev.id, set())):
             mkt = self.state.markets.get(mid)
             if mkt is None:
@@ -1322,13 +1345,20 @@ class ZapParser:
                         "suspended": sel.suspended,
                         "raw": sel.raw,
                     })
-            # Skip markets with no selections that have odds
             if not any(s["odds"] for s in selections):
                 continue
             base_name = self._enrich_market_name(mkt)
             handicaps = sorted(set(s["handicap"] for s in selections if s.get("handicap")))
             if handicaps:
                 base_name = f"{base_name} ({', '.join(handicaps)})"
+            count = seen_names.get(base_name, 0) + 1
+            seen_names[base_name] = count
+            if count > 1:
+                first_sel = next((s["name"] for s in selections if s.get("name") and s.get("odds")), "")
+                if first_sel:
+                    base_name = f"{base_name} ({first_sel}...)"
+                else:
+                    base_name = f"{base_name} #{count}"
             mkt_dict: Dict[str, Any] = {
                 "id": mkt.id,
                 "name": base_name,

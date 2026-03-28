@@ -101,9 +101,24 @@ def js_subscribe(csv: str, token: str) -> str:
     }}"""
 
 
+import re as _re
+
 def _detail_topic(ev):
-    if not ev or not ev.topic: return None
-    return "6V" + ev.topic[2:] if ev.topic.startswith("OV") else None
+    """Convert any event topic to 6V detail subscription topic.
+    OV format: OV191855685C1A_3_0 -> 6V191855685C1A_3_0
+    M format:  M191855685C1_L3_Z0 -> 6V191855685C1A_3_0
+    """
+    if not ev or not ev.topic:
+        return None
+    t = ev.topic
+    if t.startswith("OV"):
+        return "6V" + t[2:]
+    if t.startswith("M"):
+        m = _re.match(r'M(\d+)C(\d+)_L(\d+)_Z(\d+)', t)
+        if m:
+            num, sport, loc, zone = m.groups()
+            return f"6V{num}C{sport}A_{loc}_{zone}"
+    return None
 
 def _ce_dict(ce):
     d = {"change_type": ce.change_type.value, "entity_type": ce.entity_type,
@@ -266,12 +281,8 @@ class Stream:
             await asyncio.sleep(8)
             log.info("After OVM: %d events", len(self.parser.state.events))
 
-            # Phase 2: Crawl pre-match sport pages (REST blobs)
-            log.info("Phase 2: Crawling pre-match pages...")
-            token = await self._crawl_prematch(page, token) or token
-            log.info("After prematch crawl: %d events", len(self.parser.state.events))
-
-            # Phase 3: Subscribe 6V detail topics for ALL events (live + prematch)
+            # Phase 2: Subscribe 6V detail topics for ALL events (live + prematch)
+            # M-topic events (pre-match) are auto-converted: M...C{s}_L{l}_Z{z} -> 6V...C{s}A_{l}_{z}
             await self._subscribe_all(page, token)
 
             # Monitor loop

@@ -113,7 +113,7 @@ def _detail_topic(ev):
         return None
     t = ev.topic
     if t.startswith("6V"):
-        return t  # Already 6V (topic updated by parser after first response)
+        return t
     if t.startswith("OV"):
         return "6V" + t[2:]
     if t.startswith("M"):
@@ -122,6 +122,21 @@ def _detail_topic(ev):
             num, sport, loc, zone = m.groups()
             return f"6V{num}C{sport}A_{loc}_{zone}"
     return None
+
+
+def _detail_topic_alt(ev):
+    """Alternative 6V topic using the raw event ID instead of topic number.
+    Some events (badminton, minor sports) have a different number in IT vs ID.
+    IT=OV192021972C94A_30_0 but ID=151317653085C94A_30_0
+    The 6V server responds to the ID-based topic, not the IT-based one.
+    """
+    if not ev:
+        return None
+    raw_id = ev.raw.get("ID", "") or ev.id
+    if not raw_id or "C" not in raw_id:
+        return None
+    # raw_id looks like 151317653085C94A_30_0 — just prepend 6V
+    return f"6V{raw_id}"
 
 def _ce_dict(ce):
     d = {"change_type": ce.change_type.value, "entity_type": ce.entity_type,
@@ -303,18 +318,29 @@ class Stream:
                     last_scan = now
 
                 # Retry events stuck at <=1 market every 30s
+                # Uses both standard 6V topic and alternative raw-ID-based topic
                 if now - last_retry > 30:
                     retry_eids = set()
+                    alt_topics = []
                     for eid in self._subbed:
                         mkts = len(self.parser.state.event_markets.get(eid, set()))
                         if mkts <= 1:
                             retry_eids.add(eid)
+                            # Try alternative topic (raw ID based)
+                            ev = self.parser.state.events.get(eid)
+                            alt = _detail_topic_alt(ev)
+                            if alt:
+                                std = _detail_topic(ev)
+                                if alt != std:  # Only if different from standard
+                                    alt_topics.append(alt)
                     if retry_eids:
-                        # Remove from subbed so they get re-subscribed
                         self._subbed -= retry_eids
                         token = await page.evaluate(JS_TOKEN) or token
-                        log.info("Retrying %d events with <=1 market", len(retry_eids))
+                        log.info("Retrying %d events (+ %d alt topics)", len(retry_eids), len(alt_topics))
                         await self._subscribe_events(page, retry_eids, token)
+                        # Also send alternative topics directly
+                        if alt_topics:
+                            await self._subscribe_raw_topics(page, alt_topics, token)
                     last_retry = now
 
                 if now - last_log > 30:
@@ -430,6 +456,10 @@ class Stream:
             if t:
                 topics.append(t)
                 self._subbed.add(eid)
+            # Also try alt topic if raw ID differs from topic number
+            alt = _detail_topic_alt(ev)
+            if alt and alt != t:
+                topics.append(alt)
         if not topics:
             return
 
@@ -455,6 +485,24 @@ class Stream:
                 await asyncio.sleep(DRIP_INTERVAL)
 
         log.info("Subscribed %d/%d 6V topics", ok, len(topics))
+
+    async def _subscribe_raw_topics(self, page, topics: list[str], token: str):
+        """Subscribe to raw topic strings (for alternative 6V formats)."""
+        ok = 0
+        for i in range(0, len(topics), DRIP_BATCH):
+            batch = topics[i : i + DRIP_BATCH]
+            csv = ",".join(batch)
+            try:
+                r = await page.evaluate(js_subscribe(csv, token))
+                if r == "ok":
+                    ok += len(batch)
+                    self.stats["topics"] = self.stats.get("topics", 0) + len(batch)
+            except Exception:
+                pass
+            if i + DRIP_BATCH < len(topics):
+                await asyncio.sleep(DRIP_INTERVAL)
+        if ok:
+            log.info("Subscribed %d alt 6V topics", ok)
 
 
 # ---------------------------------------------------------------------------

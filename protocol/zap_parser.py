@@ -124,6 +124,16 @@ class Event:
 
 
 @dataclass
+class MarketGroup:
+    """MG entity -- a market group / category (e.g., 'Fulltime Result', 'Both Teams to Score')."""
+    id: str = ""
+    name: str = ""
+    suspended: str = ""
+    topic: str = ""
+    raw: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Market:
     """MA entity -- a betting market."""
     id: str = ""
@@ -134,6 +144,7 @@ class Market:
     suspended: str = ""
     event_id: str = ""
     topic: str = ""
+    group_name: str = ""   # Name inherited from parent MG entity
     raw: Dict[str, str] = field(default_factory=dict)
 
 
@@ -158,6 +169,7 @@ _ENTITY_TYPE_MAP: Dict[str, type] = {
     "CL": Classification,
     "CT": Competition,
     "EV": Event,
+    "MG": MarketGroup,
     "MA": Market,
     "PA": Participant,
 }
@@ -393,6 +405,7 @@ _EV_FIELD_MAP = {
     "TT": "time_type", "TU": "timestamp", "CL": "sport_id", "C2": "competition_id",
     "C3": "fixture_id", "IT": "topic", "UC": "update_context", "GO": "goals",
 }
+_MG_FIELD_MAP = {"ID": "id", "NA": "name", "SU": "suspended", "IT": "topic"}
 _MA_FIELD_MAP = {
     "ID": "id", "MA": "market_type", "NA": "name", "FI": "fixture_id",
     "CN": "columns", "SU": "suspended", "IT": "topic",
@@ -406,6 +419,7 @@ _FIELD_MAPS: Dict[str, Dict[str, str]] = {
     "CL": _CL_FIELD_MAP,
     "CT": _CT_FIELD_MAP,
     "EV": _EV_FIELD_MAP,
+    "MG": _MG_FIELD_MAP,
     "MA": _MA_FIELD_MAP,
     "PA": _PA_FIELD_MAP,
 }
@@ -813,9 +827,22 @@ class ZapParser:
         current_ct: str = ""
         current_ev: str = ""
         current_ma: str = ""
+        current_mg_name: str = ""  # Name from parent MG entity
 
         for etype, kv in entities:
-            if etype == "CL":
+            if etype == "MG":
+                # Market Group: carries the definitive market category name
+                mg_name = kv.get("NA", "")
+                mg_id = kv.get("ID", "")
+                current_mg_name = mg_name
+                # Store MG name by ID for lookup
+                if mg_id and mg_name:
+                    if not hasattr(self, '_mg_names'):
+                        self._mg_names = {}
+                    self._mg_names[mg_id] = mg_name
+                continue
+
+            elif etype == "CL":
                 # Use the CL field (sport number) as the unique sport ID.
                 sport_id = kv.get("CL", kv.get("ID", ""))
                 existing = self.state.sports.get(sport_id)
@@ -868,6 +895,17 @@ class ZapParser:
                 obj = _build_entity(etype, kv, parent_id=parent)
                 if obj:
                     obj.id = ma_key
+                    # Inherit name from parent MG entity if available
+                    if current_mg_name and (not obj.name or obj.name.strip() == ''):
+                        obj.name = current_mg_name
+                    if current_mg_name:
+                        obj.group_name = current_mg_name
+                    # Also try MG name lookup by market_type (which often matches MG ID)
+                    if hasattr(self, '_mg_names') and obj.market_type and obj.market_type in self._mg_names:
+                        if not obj.group_name:
+                            obj.group_name = self._mg_names[obj.market_type]
+                        if not obj.name or obj.name.strip() == '':
+                            obj.name = self._mg_names[obj.market_type]
                     old = self.state.upsert_market(obj)
                     current_ma = ma_key
                     ctype = ChangeType.MARKET_ADDED if old is None else ChangeType.MARKET_UPDATED
@@ -1087,17 +1125,23 @@ class ZapParser:
 
     def _enrich_market_name(self, mkt) -> str:
         """Generate a descriptive market name from available data."""
+        # Priority 1: group_name from MG entity (definitive from server)
+        if hasattr(mkt, 'group_name') and mkt.group_name:
+            return mkt.group_name
+
         name = mkt.name.strip() if mkt.name else ''
         topic = mkt.topic or mkt.raw.get('IT', '')
         mt = mkt.market_type or ''
 
-        # If we already have a good descriptive name, keep it
+        # Priority 2: MG name lookup by market_type
+        if hasattr(self, '_mg_names') and mt and mt in self._mg_names:
+            return self._mg_names[mt]
+
+        # Priority 3: if we already have a good descriptive name, keep it
         if name and len(name) > 2 and name not in ('1', '2', 'X'):
-            # Check if it's a team name being used as market name (e.g., "Bulls FC Academy")
-            # Team names as market names happen for player/team-specific markets
             pass
 
-        # Try market_type field first
+        # Try market_type field in hardcoded dict
         if mt and mt in self._MARKET_TYPE_NAMES:
             return self._MARKET_TYPE_NAMES[mt]
 

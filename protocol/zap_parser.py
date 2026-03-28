@@ -1223,22 +1223,18 @@ class ZapParser:
                 "markets": [],
             }
             market_ids = self.state.event_markets.get(ev.id, set())
+            seen_names: Dict[str, int] = {}
             for mid in market_ids:
                 mkt = self.state.markets.get(mid)
                 if mkt is None:
                     continue
-                mkt_dict: Dict[str, Any] = {
-                    "id": mkt.id,
-                    "name": self._enrich_market_name(mkt),
-                    "market_type": mkt.market_type,
-                    "suspended": mkt.suspended,
-                    "selections": [],
-                }
+                # Build selections first to check if any have odds
+                selections = []
                 sel_ids = self.state.market_selections.get(mid, set())
                 for sid in sel_ids:
                     sel = self.state.selections.get(sid)
                     if sel:
-                        mkt_dict["selections"].append({
+                        selections.append({
                             "id": sel.id,
                             "name": sel.name,
                             "odds": self._decimal_odds(sel.odds),
@@ -1246,6 +1242,21 @@ class ZapParser:
                             "handicap": sel.handicap,
                             "suspended": sel.suspended,
                         })
+                # Skip markets with no selections that have odds
+                if not any(s["odds"] for s in selections):
+                    continue
+                base_name = self._enrich_market_name(mkt)
+                # Differentiate duplicate names by handicap line
+                handicaps = sorted(set(s["handicap"] for s in selections if s.get("handicap")))
+                if handicaps:
+                    base_name = f"{base_name} ({', '.join(handicaps)})"
+                mkt_dict: Dict[str, Any] = {
+                    "id": mkt.id,
+                    "name": base_name,
+                    "market_type": mkt.market_type,
+                    "suspended": mkt.suspended,
+                    "selections": selections,
+                }
                 entry["markets"].append(mkt_dict)
             results.append(entry)
         return results
@@ -1291,19 +1302,11 @@ class ZapParser:
             mkt = self.state.markets.get(mid)
             if mkt is None:
                 continue
-            mkt_dict: Dict[str, Any] = {
-                "id": mkt.id,
-                "name": self._enrich_market_name(mkt),
-                "market_type": mkt.market_type,
-                "columns": mkt.columns,
-                "suspended": mkt.suspended,
-                "raw": mkt.raw,
-                "selections": [],
-            }
+            selections = []
             for sid in sorted(self.state.market_selections.get(mid, set())):
                 sel = self.state.selections.get(sid)
                 if sel:
-                    mkt_dict["selections"].append({
+                    selections.append({
                         "id": sel.id,
                         "name": sel.name,
                         "odds": self._decimal_odds(sel.odds),
@@ -1313,6 +1316,22 @@ class ZapParser:
                         "suspended": sel.suspended,
                         "raw": sel.raw,
                     })
+            # Skip markets with no selections that have odds
+            if not any(s["odds"] for s in selections):
+                continue
+            base_name = self._enrich_market_name(mkt)
+            handicaps = sorted(set(s["handicap"] for s in selections if s.get("handicap")))
+            if handicaps:
+                base_name = f"{base_name} ({', '.join(handicaps)})"
+            mkt_dict: Dict[str, Any] = {
+                "id": mkt.id,
+                "name": base_name,
+                "market_type": mkt.market_type,
+                "columns": mkt.columns,
+                "suspended": mkt.suspended,
+                "raw": mkt.raw,
+                "selections": selections,
+            }
             result["markets"].append(mkt_dict)
         return result
 
